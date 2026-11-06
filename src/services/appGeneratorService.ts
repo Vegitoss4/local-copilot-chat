@@ -337,7 +337,8 @@ export class ${entityName}ManagerComponent implements OnInit {
   }
 
   private static async writeFile(fileUri: vscode.Uri, content: string): Promise<void> {
+    const secureUri = AgentToolService.resolveSecurePath(fileUri.toString(), { allowNewFile: true }).uri;
     const encoder = new TextEncoder();
-    await vscode.workspace.fs.writeFile(fileUri, encoder.encode(content));
+    await vscode.workspace.fs.writeFile(secureUri, encoder.encode(content));
   }
 }

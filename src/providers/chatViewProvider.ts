@@ -198,7 +198,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       if (folders && folders.length > 0) {
-        const fileUri = vscode.Uri.joinPath(folders[0].uri, fileName);
+        const fileUri = AgentToolService.getFileUri(fileName);
         await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(content));
         const doc = await vscode.workspace.openTextDocument(fileUri);
         await vscode.window.showTextDocument(doc);

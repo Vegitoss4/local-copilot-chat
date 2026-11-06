@@ -34,6 +34,13 @@ export interface ToolResult {
   diagnostics?: string;
 }
 
+export class WorkspaceSecurityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkspaceSecurityError';
+  }
+}
+
 export class AgentToolService {
   private static cachedRgPath: string | null = null;
 
@@ -284,15 +291,270 @@ export class AgentToolService {
   }
 
   /**
-   * Resolves a workspace relative path to a URI
+   * Identifies internal extension state paths (.vscode/local-copilot/...)
    */
-  public static getFileUri(relativePath: string): vscode.Uri {
+  private static isInternalStatePath(p: string): boolean {
+    const normalized = p.replace(/\\/g, '/');
+    return /(?:^|\/)\.vscode\/local-copilot(?:\/|$)/i.test(normalized);
+  }
+
+  /**
+   * Dedicated trusted path resolver for internal extension storage (.vscode/local-copilot/...)
+   * Reserved strictly for internal services (MemoryService, SwarmOrchestrator).
+   * Not exposed to or bypassable by agent tools.
+   */
+  public static getTrustedInternalStateUri(subPath: string): vscode.Uri {
+    if (!subPath || !subPath.trim()) {
+      throw new WorkspaceSecurityError('Access Denied: Empty subpath provided for internal state.');
+    }
+
+    if (subPath.includes('\0')) {
+      throw new WorkspaceSecurityError('Access Denied: Subpath contains illegal null bytes.');
+    }
+
+    // Reject traversal before normalization
+    if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(subPath)) {
+      throw new WorkspaceSecurityError('Access Denied: Internal state path contains directory traversal sequences.');
+    }
+
+    // Reject absolute and UNC paths
+    if (path.isAbsolute(subPath) || /^[a-zA-Z]:[\\/]/.test(subPath) || /^([\\/]{2})/.test(subPath)) {
+      throw new WorkspaceSecurityError('Access Denied: Absolute or UNC paths are not permitted for internal state.');
+    }
+
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
       throw new Error('No open workspace found in VS Code.');
     }
-    const cleanRel = relativePath.replace(/^[\\\/]+/, '');
-    return vscode.Uri.joinPath(folders[0].uri, cleanRel);
+
+    const cleanSub = subPath.replace(/^[\\\/]+/, '').replace(/\\/g, '/');
+    const internalDirRel = '.vscode/local-copilot';
+    const targetRel = path.posix.join(internalDirRel, cleanSub);
+
+    // Verify containment within .vscode/local-copilot
+    const relCheck = path.posix.relative(internalDirRel, targetRel);
+    if (relCheck.startsWith('..') || relCheck === '..' || path.posix.isAbsolute(relCheck)) {
+      throw new WorkspaceSecurityError('Access Denied: Subpath resolves outside internal extension state.');
+    }
+
+    return vscode.Uri.joinPath(folders[0].uri, '.vscode', 'local-copilot', cleanSub);
+  }
+
+  /**
+   * Resolves and strictly validates a path within the active workspace.
+   * Throws WorkspaceSecurityError if the path resolves outside permitted boundaries,
+   * contains traversal sequences, or attempts to access internal extension state.
+   */
+  public static resolveSecurePath(
+    requestedPath: string,
+    options: { allowNewFile?: boolean } = {}
+  ): { uri: vscode.Uri; folder: vscode.WorkspaceFolder; canonicalFsPath?: string } {
+    if (!requestedPath || !requestedPath.trim()) {
+      throw new WorkspaceSecurityError('Access Denied: Empty path provided.');
+    }
+
+    if (requestedPath.includes('\0')) {
+      throw new WorkspaceSecurityError('Access Denied: Path contains illegal null bytes.');
+    }
+
+    // Safeguard 4: Reject traversal segments before path normalization
+    if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(requestedPath)) {
+      throw new WorkspaceSecurityError(`Access Denied: Path "${requestedPath}" contains unauthorized directory traversal sequences.`);
+    }
+
+    // Safeguards 1 & 2: Pre-normalization check for internal state access
+    if (this.isInternalStatePath(requestedPath)) {
+      throw new WorkspaceSecurityError('Access Denied: Cannot access internal extension state.');
+    }
+
+    // Reject UNC paths
+    if (/^([\\/]{2})/.test(requestedPath)) {
+      throw new WorkspaceSecurityError('Access Denied: UNC paths are not permitted.');
+    }
+
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      throw new Error('No open workspace found in VS Code.');
+    }
+
+    // Check if input is a URI with scheme
+    const uriSchemeMatch = requestedPath.match(/^([a-zA-Z0-9_\-]+):\/\/(.*)$/);
+
+    if (uriSchemeMatch) {
+      const parsedUri = vscode.Uri.parse(requestedPath);
+
+      // Find matching folder by scheme and authority
+      const matchingFolder = folders.find(
+        f => f.uri.scheme === parsedUri.scheme && f.uri.authority === parsedUri.authority
+      );
+
+      if (!matchingFolder) {
+        throw new WorkspaceSecurityError('Access Denied: Path resolves outside permitted workspace schemes/authorities.');
+      }
+
+      if (parsedUri.scheme !== 'file') {
+        // Remote / virtual URI validation
+        const folderPathSegments = matchingFolder.uri.path.split('/').filter(Boolean);
+        const targetPathSegments = parsedUri.path.split('/').filter(Boolean);
+
+        if (targetPathSegments.length < folderPathSegments.length) {
+          throw new WorkspaceSecurityError('Access Denied: Path resolves outside workspace folder.');
+        }
+
+        for (let i = 0; i < folderPathSegments.length; i++) {
+          if (targetPathSegments[i] !== folderPathSegments[i]) {
+            throw new WorkspaceSecurityError('Access Denied: Path resolves outside workspace folder.');
+          }
+        }
+
+        return { uri: parsedUri, folder: matchingFolder };
+      }
+
+      requestedPath = parsedUri.fsPath;
+    }
+
+    // Handle Local Filesystem: Distinguish drive-qualified absolute paths from relative paths with leading slashes
+    const isDriveAbs = /^[a-zA-Z]:[\\/]/.test(requestedPath);
+    const isPosixAbs = process.platform !== 'win32' && path.isAbsolute(requestedPath) && (folders.some(f => requestedPath.startsWith(f.uri.fsPath)) || /^\/(etc|var|usr|root|bin|home|opt)/.test(requestedPath));
+    const isAbs = isDriveAbs || isPosixAbs;
+
+    let targetFolder: vscode.WorkspaceFolder;
+    let effectiveRelPath: string;
+
+    if (isAbs) {
+      const normAbs = path.normalize(requestedPath);
+      const isWin = process.platform === 'win32';
+      const absForComp = isWin ? normAbs.toLowerCase() : normAbs;
+
+      // Match against all open workspace folders
+      const matching = folders
+        .filter(f => f.uri.scheme === 'file')
+        .map(f => {
+          const folderNorm = path.normalize(f.uri.fsPath);
+          const folderForComp = isWin ? folderNorm.toLowerCase() : folderNorm;
+          const rel = path.relative(folderForComp, absForComp);
+          const isContained = !rel.startsWith('..') && !path.isAbsolute(rel) && rel !== '..';
+          return { folder: f, folderNorm, isContained, length: folderNorm.length };
+        })
+        .filter(m => m.isContained);
+
+      if (matching.length === 0) {
+        throw new WorkspaceSecurityError(`Access Denied: Path "${requestedPath}" resolves outside the permitted workspace.`);
+      }
+
+      // Longest prefix match for nested roots
+      matching.sort((a, b) => b.length - a.length);
+      targetFolder = matching[0].folder;
+      effectiveRelPath = path.relative(matching[0].folderNorm, normAbs);
+    } else {
+      // Relative path handling
+      const cleanRel = requestedPath.replace(/^[\\\/]+/, '');
+
+      if (folders.length > 1) {
+        // Multi-root workspace resolution: never guess or silently pick folders[0]
+        const firstSegment = cleanRel.split(/[\\\/]/)[0];
+        const matchingByName = folders.filter(f => f.name === firstSegment);
+
+        if (matchingByName.length === 1) {
+          targetFolder = matchingByName[0];
+          effectiveRelPath = cleanRel.slice(firstSegment.length).replace(/^[\\\/]+/, '');
+        } else if (matchingByName.length > 1) {
+          throw new WorkspaceSecurityError(`Ambiguous Workspace Folder: Multiple workspace folders named "${firstSegment}".`);
+        } else {
+          throw new WorkspaceSecurityError(`Ambiguous Workspace Folder: Path "${requestedPath}" does not specify an active workspace folder.`);
+        }
+      } else {
+        targetFolder = folders[0];
+        effectiveRelPath = cleanRel;
+      }
+    }
+
+    // If target folder is non-file (remote/virtual)
+    if (targetFolder.uri.scheme !== 'file') {
+      const targetUri = vscode.Uri.joinPath(targetFolder.uri, effectiveRelPath.replace(/\\/g, '/'));
+      return { uri: targetUri, folder: targetFolder };
+    }
+
+    // Local filesystem containment & canonical check
+    const isWin = process.platform === 'win32';
+    const folderRootNorm = path.normalize(targetFolder.uri.fsPath);
+    const candidateFsPath = path.resolve(folderRootNorm, effectiveRelPath);
+
+    // Separator-aware lexical containment check
+    const rootForComp = isWin ? folderRootNorm.toLowerCase() : folderRootNorm;
+    const candidateForComp = isWin ? candidateFsPath.toLowerCase() : candidateFsPath;
+    const lexicalRel = path.relative(rootForComp, candidateForComp);
+
+    if (lexicalRel.startsWith('..') || lexicalRel === '..' || path.isAbsolute(lexicalRel)) {
+      throw new WorkspaceSecurityError(`Access Denied: Path "${requestedPath}" resolves outside the permitted workspace.`);
+    }
+
+    // Canonical containment check (Symlinks & Junctions) if workspace physically exists on disk
+    if (fs.existsSync(folderRootNorm)) {
+      try {
+        if (fs.existsSync(candidateFsPath)) {
+          const canonicalTarget = fs.realpathSync.native ? fs.realpathSync.native(candidateFsPath) : fs.realpathSync(candidateFsPath);
+          const canonicalRoot = fs.realpathSync.native ? fs.realpathSync.native(folderRootNorm) : fs.realpathSync(folderRootNorm);
+
+          const canTargetComp = isWin ? canonicalTarget.toLowerCase() : canonicalTarget;
+          const canRootComp = isWin ? canonicalRoot.toLowerCase() : canonicalRoot;
+
+          const canRel = path.relative(canRootComp, canTargetComp);
+          if (canRel.startsWith('..') || canRel === '..' || path.isAbsolute(canRel)) {
+            throw new WorkspaceSecurityError(`Access Denied: Path "${requestedPath}" resolves outside the permitted workspace via symbolic link or junction.`);
+          }
+
+          // Post-canonical check for internal state
+          if (this.isInternalStatePath(canonicalTarget)) {
+            throw new WorkspaceSecurityError('Access Denied: Cannot access internal extension state.');
+          }
+        } else {
+          if (!options.allowNewFile) {
+            throw new WorkspaceSecurityError(`Access Denied: File not found "${requestedPath}".`);
+          }
+
+          // Walk up to closest existing ancestor
+          let ancestor = path.dirname(candidateFsPath);
+          while (!fs.existsSync(ancestor) && ancestor !== path.dirname(ancestor)) {
+            ancestor = path.dirname(ancestor);
+          }
+
+          if (fs.existsSync(ancestor)) {
+            const canonicalAncestor = fs.realpathSync.native ? fs.realpathSync.native(ancestor) : fs.realpathSync(ancestor);
+            const canonicalRoot = fs.realpathSync.native ? fs.realpathSync.native(folderRootNorm) : fs.realpathSync(folderRootNorm);
+
+            const canAncComp = isWin ? canonicalAncestor.toLowerCase() : canonicalAncestor;
+            const canRootComp = isWin ? canonicalRoot.toLowerCase() : canonicalRoot;
+
+            const ancRel = path.relative(canRootComp, canAncComp);
+            if (ancRel.startsWith('..') || ancRel === '..' || path.isAbsolute(ancRel)) {
+              throw new WorkspaceSecurityError(`Access Denied: Parent directory of "${requestedPath}" resolves outside the permitted workspace.`);
+            }
+
+            if (this.isInternalStatePath(canonicalAncestor)) {
+              throw new WorkspaceSecurityError('Access Denied: Cannot access internal extension state.');
+            }
+          } else {
+            throw new WorkspaceSecurityError(`Access Denied: Parent directory of "${requestedPath}" does not exist.`);
+          }
+        }
+      } catch (e: any) {
+        if (e instanceof WorkspaceSecurityError) {
+          throw e;
+        }
+        throw new WorkspaceSecurityError(`Access Denied: Canonicalization failed for "${requestedPath}".`);
+      }
+    }
+
+    const fileUri = vscode.Uri.file(candidateFsPath);
+    return { uri: fileUri, folder: targetFolder, canonicalFsPath: candidateFsPath };
+  }
+
+  /**
+   * Resolves a workspace relative path to a URI
+   */
+  public static getFileUri(relativePath: string): vscode.Uri {
+    return this.resolveSecurePath(relativePath, { allowNewFile: true }).uri;
   }
 
   /**
@@ -407,6 +669,31 @@ export class AgentToolService {
       const fileUri = this.getFileUri(filePath);
       const data = new TextEncoder().encode(content);
       await vscode.workspace.fs.writeFile(fileUri, data);
+
+      // Post-write verification (detection only, non-destructive audit)
+      if (fileUri.scheme === 'file' && fs.existsSync(fileUri.fsPath)) {
+        try {
+          const canonicalPostWrite = fs.realpathSync.native ? fs.realpathSync.native(fileUri.fsPath) : fs.realpathSync(fileUri.fsPath);
+          const folders = vscode.workspace.workspaceFolders;
+          if (folders && folders.length > 0) {
+            const isWin = process.platform === 'win32';
+            const matched = folders.some(f => {
+              if (f.uri.scheme !== 'file' || !fs.existsSync(f.uri.fsPath)) return false;
+              const canFolder = fs.realpathSync.native ? fs.realpathSync.native(f.uri.fsPath) : fs.realpathSync(f.uri.fsPath);
+              const rel = path.relative(isWin ? canFolder.toLowerCase() : canFolder, isWin ? canonicalPostWrite.toLowerCase() : canonicalPostWrite);
+              return !rel.startsWith('..') && !path.isAbsolute(rel) && rel !== '..';
+            });
+
+            if (!matched) {
+              console.error(`[SECURITY ALERT] Post-write verification failed for ${filePath}: canonical target ${canonicalPostWrite} escaped workspace.`);
+              return {
+                success: false,
+                output: `Security Alert: Post-write verification failed. Target file resolved outside workspace.`
+              };
+            }
+          }
+        } catch {}
+      }
 
       const doc = await vscode.workspace.openTextDocument(fileUri);
       await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
@@ -566,7 +853,21 @@ export class AgentToolService {
    */
   public static async listDir(dirPath: string = ''): Promise<string> {
     try {
-      const targetUri = dirPath ? this.getFileUri(dirPath) : vscode.workspace.workspaceFolders![0].uri;
+      const folders = vscode.workspace.workspaceFolders;
+      if (!folders || folders.length === 0) {
+        return 'Error listing directory: No open workspace found in VS Code.';
+      }
+
+      let targetUri: vscode.Uri;
+      if (!dirPath || !dirPath.trim()) {
+        if (folders.length > 1) {
+          return 'Error listing directory: Ambiguous Workspace Folder: In a multi-root workspace, a target folder name must be specified.';
+        }
+        targetUri = folders[0].uri;
+      } else {
+        targetUri = this.getFileUri(dirPath);
+      }
+
       const entries = await vscode.workspace.fs.readDirectory(targetUri);
       const lines = entries.map(([name, type]) => {
         const typeStr = type === vscode.FileType.Directory ? '[DIR]' : '[FILE]';

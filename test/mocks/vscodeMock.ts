@@ -43,16 +43,28 @@ export class MockUri {
   public fragment: string = '';
   public fsPath: string;
 
-  constructor(filePath: string) {
-    this.fsPath = path.normalize(filePath);
-    this.path = this.fsPath.replace(/\\/g, '/');
+  constructor(filePath: string, scheme: string = 'file', authority: string = '') {
+    this.scheme = scheme;
+    this.authority = authority;
+    if (scheme === 'file') {
+      const cleanPath = (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(filePath)) ? filePath.slice(1) : filePath;
+      this.fsPath = path.normalize(cleanPath);
+      this.path = this.fsPath.replace(/\\/g, '/');
+    } else {
+      this.path = filePath;
+      this.fsPath = filePath;
+    }
   }
 
   static file(f: string): MockUri {
-    return new MockUri(f);
+    return new MockUri(f, 'file');
   }
 
   static parse(val: string): MockUri {
+    const match = val.match(/^([a-zA-Z0-9_\-]+):\/\/([^\/]*)(.*)$/);
+    if (match) {
+      return new MockUri(match[3] || '/', match[1], match[2]);
+    }
     return new MockUri(val);
   }
 
@@ -72,12 +84,20 @@ export class MockUri {
   }
 
   static joinPath(baseUri: MockUri, ...pathSegments: string[]): MockUri {
-    const joined = path.join(baseUri.fsPath, ...pathSegments);
-    return new MockUri(joined);
+    if (baseUri.scheme === 'file') {
+      const joined = path.join(baseUri.fsPath, ...pathSegments);
+      return new MockUri(joined, 'file');
+    }
+    const joinedPath = path.posix.join(baseUri.path, ...pathSegments);
+    return new MockUri(joinedPath, baseUri.scheme, baseUri.authority);
   }
 
   toString(): string {
-    return `file://${this.path}`;
+    if (this.scheme === 'file') {
+      const p = this.path.startsWith('/') ? this.path : `/${this.path}`;
+      return `file://${p}`;
+    }
+    return `${this.scheme}://${this.authority}${this.path}`;
   }
 }
 
@@ -144,8 +164,15 @@ class MockFileSystem {
 
 export const mockFs = new MockFileSystem();
 
+export interface MockWorkspaceFolder {
+  uri: MockUri;
+  name: string;
+  index: number;
+}
+
 export interface WorkspaceMockState {
   workspaceRoot: string;
+  workspaceFolders?: MockWorkspaceFolder[];
   documents: Map<string, MockDocument>;
   diagnostics: Map<string, any[]>;
 }
@@ -158,9 +185,18 @@ export const mockState: WorkspaceMockState = {
 
 export function resetMockState(workspaceRoot: string = 'C:/Projects/test-workspace') {
   mockState.workspaceRoot = path.normalize(workspaceRoot);
+  mockState.workspaceFolders = undefined;
   mockState.documents.clear();
   mockState.diagnostics.clear();
   mockFs.clear();
+}
+
+export function setMockWorkspaceFolders(folders: Array<{ name: string; uri: MockUri; index?: number }>) {
+  mockState.workspaceFolders = folders.map((f, i) => ({
+    name: f.name,
+    uri: f.uri,
+    index: f.index ?? i
+  }));
 }
 
 export const vscodeMock = {
@@ -177,6 +213,9 @@ export const vscodeMock = {
   },
   workspace: {
     get workspaceFolders() {
+      if (mockState.workspaceFolders && mockState.workspaceFolders.length > 0) {
+        return mockState.workspaceFolders;
+      }
       return [{
         uri: MockUri.file(mockState.workspaceRoot),
         name: path.basename(mockState.workspaceRoot),
