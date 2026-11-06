@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Compilation outputs
+out/
+out-test/
+dist/
+
+# Test outputs and runners
+.vscode-test/
+coverage/
+
+# VSIX packages
+*.vsix
+
+# TypeScript build info cache
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local Copilot runtime state & caches
+.vscode/local-copilot/

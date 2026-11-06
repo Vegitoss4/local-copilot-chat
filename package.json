@@ -1,0 +1,100 @@
+{
+  "name": "local-copilot-chat",
+  "displayName": "Local Copilot Chat",
+  "description": "Copilot Chat with seamless switching between local AI models like Qwen and DeepSeek",
+  "version": "0.1.0",
+  "publisher": "local-developer",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onView:localCopilotChat.chatView"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "local-copilot-sidebar",
+          "title": "Local Copilot",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "local-copilot-sidebar": [
+        {
+          "type": "webview",
+          "id": "localCopilotChat.chatView",
+          "name": "Local Copilot Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "localCopilotChat.focus",
+        "title": "Local Copilot: Open Chat"
+      },
+      {
+        "command": "localCopilotChat.explainCode",
+        "title": "Local Copilot: Explain Selected Code"
+      },
+      {
+        "command": "localCopilotChat.refactorCode",
+        "title": "Local Copilot: Refactor Selected Code"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "localCopilotChat.explainCode",
+          "when": "editorHasSelection",
+          "group": "localCopilot@1"
+        },
+        {
+          "command": "localCopilotChat.refactorCode",
+          "when": "editorHasSelection",
+          "group": "localCopilot@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Local Copilot Chat",
+      "properties": {
+        "localCopilot.ollamaEndpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Base URL for the local Ollama API"
+        },
+        "localCopilot.defaultModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Default local model to use on startup"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "compile:test": "tsc -p ./tsconfig.test.json",
+    "test:unit": "npm run compile:test && mocha --require out-test/test/setup.js \"out-test/test/unit/**/*.test.js\"",
+    "test:integration": "npm run compile && npm run compile:test && node out-test/test/integration/runTest.js",
+    "test": "npm run test:unit"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/mock-require": "^3.0.0",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
+    "mocha": "^10.8.2",
+    "mock-require": "^3.0.3",
+    "typescript": "^5.3.3"
+  }
+}
