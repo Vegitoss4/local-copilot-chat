@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { OllamaService, ChatMessage } from './ollamaService';
 import { AgentToolService, ToolCall, ToolResult } from './agentToolService';
+import { CommandClassifier, CommandTier } from './commandClassifier';
+import { PathSecurity } from './pathSecurity';
 
 export interface ApprovalRequest {
   id: string;
@@ -31,26 +33,36 @@ export interface AgentCallbacks {
 
 export interface AgentOptions {
   maxIterations?: number;
+  maxTurns?: number;
+  numCtx?: number;
+  temperature?: number;
   autonomousMode?: boolean;
   userModel: string;
   availableModels: string[];
+  workspaceRootUri?: vscode.Uri;
 }
 
 export class AutonomousAgent {
   private ollamaService: OllamaService;
   private messageHistory: ChatMessage[] = [];
   private maxIterations: number;
+  private numCtx: number;
+  private temperature: number;
   private autonomousMode: boolean;
   private userModel: string;
   private availableModels: string[];
+  private _sessionRootUri?: vscode.Uri;
   private pendingUserAnswerResolver?: (answer: string) => void;
 
   constructor(ollamaService: OllamaService, options: AgentOptions) {
     this.ollamaService = ollamaService;
-    this.maxIterations = options.maxIterations ?? 20;
+    this.maxIterations = options.maxTurns ?? options.maxIterations ?? 20;
+    this.numCtx = options.numCtx ?? 16384;
+    this.temperature = options.temperature ?? 0.2;
     this.autonomousMode = options.autonomousMode ?? true;
     this.userModel = options.userModel;
     this.availableModels = options.availableModels;
+    this._sessionRootUri = options.workspaceRootUri;
   }
 
   public setAutonomousMode(enabled: boolean) {
@@ -172,7 +184,11 @@ export class AutonomousAgent {
           execModel,
           this.messageHistory,
           AgentToolService.TOOL_DEFINITIONS,
-          signal
+          signal,
+          {
+            num_ctx: this.numCtx,
+            temperature: Math.min(this.temperature, 0.1),
+          }
         );
       } catch (err: any) {
         if (err.name === 'AbortError') throw err;
@@ -259,12 +275,100 @@ export class AutonomousAgent {
         // Emit descriptive progress message based on tool
         this.emitToolProgressStart(callbacks, toolName, args);
 
-        // Human-in-the-Loop Safety Check for Destructive Tools
+        // Command security pre-check
+        let commandTier: CommandTier | undefined;
+        if (toolName === 'execute_command') {
+          try {
+            const classification = CommandClassifier.classify(args.command || '');
+            commandTier = classification.tier;
+            if (classification.tier === CommandTier.TIER_4_PROHIBITED) {
+              const prohibitedResult: ToolResult = {
+                toolCallId: callId,
+                name: toolName,
+                success: false,
+                output: `Command rejected by security policy: ${classification.reason}`,
+              };
+              callbacks.onToolEnd?.(prohibitedResult);
+              this.messageHistory.push({
+                role: 'tool',
+                name: toolName,
+                content: prohibitedResult.output,
+              });
+              continue;
+            }
+          } catch (err: any) {
+            const syntaxErrResult: ToolResult = {
+              toolCallId: callId,
+              name: toolName,
+              success: false,
+              output: `Command syntax rejected: ${err.message}`,
+            };
+            callbacks.onToolEnd?.(syntaxErrResult);
+            this.messageHistory.push({
+              role: 'tool',
+              name: toolName,
+              content: syntaxErrResult.output,
+            });
+            continue;
+          }
+        }
+
+        // Human-in-the-Loop Safety Check:
+        // 1. In non-autonomous mode: all destructive tools require approval.
+        // 2. In autonomous mode: Tier 2 and Tier 3 commands require approval as an unbypassable guardrail.
+        // 3. Sensitive Target Defense: Any tool modifying sensitive files (.github, .git, package.json scripts, .env) requires approval even in autonomous mode.
+        // 4. Batch Hard Cap: Any transactional patch touching > 10 files requires approval.
         const isDestructive = AgentToolService.isDestructiveTool(toolName);
-        if (isDestructive && !this.autonomousMode && callbacks.requestApproval) {
+        let touchesSensitiveTarget = false;
+
+        if (toolName === 'create_file' || toolName === 'str_replace' || toolName === 'apply_patch') {
+          if (args.filePath && PathSecurity.isSensitiveTarget(args.filePath)) {
+            touchesSensitiveTarget = true;
+          }
+        } else if (toolName === 'apply_transactional_patches') {
+          const patches = Array.isArray(args.patches) ? args.patches : [];
+          if (patches.length > 10) touchesSensitiveTarget = true; // Batch size hard cap
+          for (const p of patches) {
+            if (p.filePath && PathSecurity.isSensitiveTarget(p.filePath)) {
+              touchesSensitiveTarget = true;
+              break;
+            }
+          }
+        }
+
+        const requiresApproval =
+          (!this.autonomousMode && isDestructive) ||
+          touchesSensitiveTarget ||
+          (this.autonomousMode &&
+            toolName === 'execute_command' &&
+            (commandTier === CommandTier.TIER_2_PROJECT_EXECUTION ||
+              commandTier === CommandTier.TIER_3_ARBITRARY_COMMAND));
+
+        if (requiresApproval) {
+          if (!callbacks.requestApproval) {
+            // FAIL-CLOSED
+            const deniedResult: ToolResult = {
+              toolCallId: callId,
+              name: toolName,
+              success: false,
+              output: `Execution denied: Tool '${toolName}' requires user approval and no approval handler is available (fail-closed policy).`,
+            };
+            callbacks.onToolEnd?.(deniedResult);
+            callbacks.onProgress?.({
+              icon: '❌',
+              message: `Action denied (fail-closed policy): ${toolName}`,
+            });
+            this.messageHistory.push({
+              role: 'tool',
+              name: toolName,
+              content: deniedResult.output,
+            });
+            continue;
+          }
+
           callbacks.onProgress?.({
             icon: '🛡️',
-            message: `Awaiting approval to execute: ${toolName}`
+            message: `Awaiting approval to execute: ${toolName}`,
           });
 
           const desc = this.formatActionDescription(toolName, args);
@@ -272,7 +376,7 @@ export class AutonomousAgent {
             id: callId,
             toolName,
             args,
-            description: desc
+            description: desc,
           });
 
           if (!approved) {
@@ -280,18 +384,18 @@ export class AutonomousAgent {
               toolCallId: callId,
               name: toolName,
               success: false,
-              output: `Execution denied by user for action: ${toolName}. Please choose an alternative approach or ask the user.`
+              output: `Execution denied by user for action: ${toolName}. Please choose an alternative approach or ask the user.`,
             };
             callbacks.onToolEnd?.(deniedResult);
             callbacks.onProgress?.({
               icon: '❌',
-              message: `Action denied by user: ${toolName}`
+              message: `Action denied by user: ${toolName}`,
             });
 
             this.messageHistory.push({
               role: 'tool',
               name: toolName,
-              content: deniedResult.output
+              content: deniedResult.output,
             });
             continue;
           }
@@ -412,6 +516,10 @@ export class AutonomousAgent {
           const res = await AgentToolService.applyPatch(args.filePath, args.patchContent);
           return { toolCallId: callId, name: toolName, success: res.success, output: res.output };
         }
+        case 'apply_transactional_patches': {
+          const res = await AgentToolService.applyTransactionalPatches(args.patches || [], this._sessionRootUri);
+          return { toolCallId: callId, name: toolName, success: res.success, output: res.output };
+        }
         case 'execute_command': {
           const res = await AgentToolService.executeCommand(args.command);
           const formatted = `Exit Code: ${res.exitCode}\nSTDOUT:\n${res.stdout || '(none)'}\nSTDERR:\n${res.stderr || '(none)'}`;
@@ -452,7 +560,8 @@ export class AutonomousAgent {
       totalChars += (msg.content?.length || 0);
     }
 
-    if (totalChars > 45000 && this.messageHistory.length > 6) {
+    const thresholdChars = Math.floor(this.numCtx * 2.5);
+    if (totalChars > thresholdChars && this.messageHistory.length > 6) {
       const system = this.messageHistory[0];
       const goal = this.messageHistory[1];
       const recent = this.messageHistory.slice(-4);
@@ -484,6 +593,8 @@ export class AutonomousAgent {
         return `Execute command: \`${args.command}\``;
       case 'apply_patch':
         return `Apply patch to: \`${args.filePath}\``;
+      case 'apply_transactional_patches':
+        return `Apply atomic transactional patches to ${args.patches?.length || 0} file(s)`;
       default:
         return `Execute action \`${toolName}\``;
     }

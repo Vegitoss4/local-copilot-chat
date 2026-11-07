@@ -3,6 +3,7 @@ import { AgentToolService } from '../../src/services/agentToolService';
 import { SwarmOrchestrator } from '../../src/services/swarmOrchestrator';
 import { OllamaService } from '../../src/services/ollamaService';
 import { resetMockState, mockFs } from '../mocks/vscodeMock';
+import { PathSecurity } from '../../src/services/pathSecurity';
 
 describe('Tool Execution Safety & Approval Gates Baseline', () => {
   const testRoot = 'C:/Projects/test-workspace';
@@ -43,6 +44,23 @@ describe('Tool Execution Safety & Approval Gates Baseline', () => {
 
   it('should cancel operation when user denies approval in non-autonomous mode', async () => {
     const ollamaMock = new OllamaService('http://127.0.0.1:11434');
+    // Mock chatWithTools to simulate a model issuing a destructive tool call
+    ollamaMock.chatWithTools = async () => {
+      return {
+        role: 'assistant',
+        content: 'I will create a file',
+        tool_calls: [
+          {
+            id: 'call_test_1',
+            function: {
+              name: 'create_file',
+              arguments: { path: 'test.txt', content: 'test content' }
+            }
+          }
+        ]
+      };
+    };
+
     const swarm = new SwarmOrchestrator(ollamaMock, {
       autonomousMode: false,
       userModel: 'qwen2.5-coder:7b',
@@ -62,7 +80,7 @@ describe('Tool Execution Safety & Approval Gates Baseline', () => {
             return false; // User denies
           },
           onToolEnd: (res) => {
-            if (!res.success && res.output.includes('cancelled')) {
+            if (!res.success && res.output && res.output.includes('cancelled')) {
               cancelled = true;
             }
           }
@@ -72,24 +90,174 @@ describe('Tool Execution Safety & Approval Gates Baseline', () => {
     } catch {
       // Swarm completes
     }
+
+    assert.strictEqual(requestedApproval, true, 'User approval should have been requested');
+    assert.strictEqual(cancelled, true, 'Tool execution should have been cancelled');
   });
 
-  // PENDING SECURITY TEST: Current implementation fails open if callbacks.requestApproval is undefined
-  it.skip('[PENDING SECURITY FIX - PHASE 1] should fail-closed and reject destructive tools when requestApproval is undefined in non-autonomous mode', async () => {
+  it('should fail-closed and reject destructive tools when requestApproval is undefined in non-autonomous mode', async () => {
     const ollamaMock = new OllamaService('http://127.0.0.1:11434');
+    ollamaMock.chatWithTools = async () => ({
+      role: 'assistant',
+      content: 'I will create a file',
+      tool_calls: [
+        {
+          id: 'call_test_fail_closed',
+          function: {
+            name: 'create_file',
+            arguments: { path: 'fail_closed.txt', content: 'hello' },
+          },
+        },
+      ],
+    });
+    (ollamaMock as any).resolveModelForRole = (_role: any, fallback: string) => fallback;
+
     const swarm = new SwarmOrchestrator(ollamaMock, {
       autonomousMode: false,
       userModel: 'qwen2.5-coder:7b',
-      availableModels: ['qwen2.5-coder:7b']
+      availableModels: ['qwen2.5-coder:7b'],
     });
 
-    // In non-autonomous mode, if callbacks.requestApproval is missing, it MUST NOT execute destructive tool
-    let executedDestructiveTool = false;
-    // When implemented in Phase 1, dispatchBaseTool must reject with error rather than executing
+    let toolResult: any = null;
+    try {
+      await swarm.runTask(
+        'Write file',
+        {
+          // Notice: requestApproval callback is omitted!
+          onToolEnd: (res) => {
+            toolResult = res;
+          },
+        },
+        new AbortController().signal
+      );
+    } catch {}
+
+    assert.ok(toolResult, 'Tool should have been dispatched');
+    assert.strictEqual(toolResult.success, false, 'Destructive tool should have failed closed');
+    assert.ok(
+      toolResult.output.includes('fail-closed') || toolResult.output.includes('approval'),
+      `Output should indicate approval policy rejection: ${toolResult.output}`
+    );
+    assert.strictEqual(mockFs.getFile('C:/Projects/test-workspace/fail_closed.txt'), undefined, 'File must not be created');
   });
 
-  // PENDING SECURITY TEST: Autonomous mode currently bypasses all approval checks
-  it.skip('[PENDING SECURITY FIX - PHASE 1] should enforce approval for unwhitelisted shell commands even in autonomous mode', async () => {
-    // Phase 1 security requirement: dangerous commands require confirmation regardless of autonomous flag
+  it('should enforce approval for unwhitelisted shell commands even in autonomous mode', async () => {
+    const ollamaMock = new OllamaService('http://127.0.0.1:11434');
+    ollamaMock.chatWithTools = async () => ({
+      role: 'assistant',
+      content: 'I will run a command',
+      tool_calls: [
+        {
+          id: 'call_test_cmd_approval',
+          function: {
+            name: 'execute_command',
+            arguments: { command: 'npm install lodash' },
+          },
+        },
+      ],
+    });
+    (ollamaMock as any).resolveModelForRole = (_role: any, fallback: string) => fallback;
+
+    const swarm = new SwarmOrchestrator(ollamaMock, {
+      autonomousMode: true, // Autonomous mode is enabled!
+      userModel: 'qwen2.5-coder:7b',
+      availableModels: ['qwen2.5-coder:7b'],
+    });
+
+    let approvalRequested = false;
+    let toolResult: any = null;
+    try {
+      await swarm.runTask(
+        'Install package',
+        {
+          requestApproval: async () => {
+            approvalRequested = true;
+            return false; // User denies
+          },
+          onToolEnd: (res) => {
+            toolResult = res;
+          },
+        },
+        new AbortController().signal
+      );
+    } catch {}
+
+    assert.strictEqual(approvalRequested, true, 'Approval must be requested for Tier 3 command even in autonomous mode');
+    assert.ok(toolResult);
+    assert.strictEqual(toolResult.success, false);
+    assert.ok(toolResult.output.includes('cancelled') || toolResult.output.includes('denied'));
+  });
+
+  describe('Autonomous Sensitive Target Defense Policy', () => {
+    it('should classify sensitive files and directories accurately', () => {
+      const sensitive = [
+        '.git/hooks/pre-commit',
+        '.github/workflows/deploy.yml',
+        '.gitlab-ci.yml',
+        '.env',
+        '.env.production',
+        '.npmrc',
+        'package.json',
+        'tasks.json',
+        'launch.json',
+        'deploy.sh',
+        'build.ps1',
+        'run.cmd',
+        'install.bat'
+      ];
+      for (const p of sensitive) {
+        assert.strictEqual(PathSecurity.isSensitiveTarget(p), true, `Expected "${p}" to be classified as sensitive`);
+      }
+
+      const regular = [
+        'src/index.ts',
+        'src/components/App.tsx',
+        'README.md',
+        'styles/main.css',
+        'test/unit/math.test.ts'
+      ];
+      for (const p of regular) {
+        assert.strictEqual(PathSecurity.isSensitiveTarget(p), false, `Expected "${p}" to NOT be sensitive`);
+      }
+    });
+
+    it('should enforce approval in SwarmOrchestrator for sensitive targets even in autonomous mode', async () => {
+      const ollamaMock = new OllamaService('http://127.0.0.1:11434');
+      ollamaMock.chatWithTools = async () => ({
+        role: 'assistant',
+        content: 'Modifying workflow',
+        tool_calls: [
+          {
+            id: 'call_sens_swarm',
+            function: {
+              name: 'create_file',
+              arguments: { filePath: '.github/workflows/deploy.yml', content: 'name: evil' },
+            },
+          },
+        ],
+      });
+      (ollamaMock as any).resolveModelForRole = (_role: any, fallback: string) => fallback;
+
+      const swarm = new SwarmOrchestrator(ollamaMock, {
+        autonomousMode: true, // Autonomous mode is enabled!
+        userModel: 'qwen2.5-coder:7b',
+        availableModels: ['qwen2.5-coder:7b'],
+      });
+
+      let approvalPrompted = false;
+      await swarm.runTask(
+        'Update deploy workflow',
+        {
+          requestApproval: async (req) => {
+            approvalPrompted = true;
+            assert.strictEqual(req.toolName, 'create_file');
+            return false; // Deny
+          },
+        },
+        new AbortController().signal
+      );
+
+      assert.strictEqual(approvalPrompted, true, 'SwarmOrchestrator MUST require approval for sensitive target');
+    });
   });
 });

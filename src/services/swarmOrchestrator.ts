@@ -1,7 +1,10 @@
 import * as vscode from 'vscode';
 import { OllamaService, ChatMessage } from './ollamaService';
 import { AgentToolService, ToolCall, ToolResult } from './agentToolService';
+import { CommandClassifier, CommandTier } from './commandClassifier';
+import { PathSecurity } from './pathSecurity';
 import { MemoryService } from './memoryService';
+import { AtomicFileWriter } from './atomicFileWriter';
 import {
   AgentRole,
   IAgentDefinition,
@@ -12,11 +15,13 @@ import { ApprovalRequest, ProgressEvent, AgentCallbacks } from './autonomousAgen
 
 export { ApprovalRequest, ProgressEvent, AgentCallbacks };
 
-export interface SwarmWhiteboard {
+export interface SwarmTaskSnapshot {
+  taskId: string;
   userObjective: string;
   executionPlan: string;
   scratchpad: string;
-  activeAgent: AgentRole;
+  modifiedFiles: string[];
+  diagnostics: string[];
   delegationHistory: Array<{
     from: AgentRole;
     to: AgentRole;
@@ -25,23 +30,51 @@ export interface SwarmWhiteboard {
     status?: string;
     timestamp: number;
   }>;
+  completed?: boolean;
+  updatedAt?: number;
+}
+
+export interface SwarmWhiteboard {
+  version: 2;
+  activeTaskId: string;
+  currentTask: SwarmTaskSnapshot;
+  lastTask?: SwarmTaskSnapshot;
+  projectContext?: {
+    architecturalNotes: string;
+    keyDecisions: string[];
+  };
+  // Top-level properties synchronized with currentTask for backwards compatibility
+  userObjective: string;
+  executionPlan: string;
+  scratchpad: string;
+  activeAgent: AgentRole;
+  delegationHistory: SwarmTaskSnapshot['delegationHistory'];
   modifiedFiles: string[];
   diagnostics: string[];
 }
 
 export interface SwarmOptions {
   maxTurns?: number;
+  numCtx?: number;
+  temperature?: number;
   autonomousMode?: boolean;
   userModel: string;
   availableModels: string[];
+  isContinuation?: boolean;
+  workspaceRootUri?: vscode.Uri;
 }
 
 export class SwarmOrchestrator {
   private ollamaService: OllamaService;
   private maxTurns: number;
+  private numCtx: number;
+  private temperature: number;
   private autonomousMode: boolean;
   private userModel: string;
-  private availableModels: string[];
+  availableModels: string[];
+  private isContinuation: boolean;
+  private workspaceRootUri?: vscode.Uri;
+  private _savePromise: Promise<void> = Promise.resolve();
 
   // Time-slicing state: track loaded model to unload before loading a new one under 8GB VRAM constraint
   private currentlyLoadedModel: string | null = null;
@@ -58,9 +91,13 @@ export class SwarmOrchestrator {
   constructor(ollamaService: OllamaService, options: SwarmOptions) {
     this.ollamaService = ollamaService;
     this.maxTurns = options.maxTurns ?? 25;
+    this.numCtx = options.numCtx ?? 16384;
+    this.temperature = options.temperature ?? 0.2;
     this.autonomousMode = options.autonomousMode ?? true;
     this.userModel = options.userModel;
     this.availableModels = options.availableModels;
+    this.isContinuation = options.isContinuation ?? false;
+    this.workspaceRootUri = options.workspaceRootUri;
   }
 
   public setAutonomousMode(enabled: boolean) {
@@ -115,25 +152,61 @@ export class SwarmOrchestrator {
 
     // Initialize or Hydrate the Whiteboard from persistent disk storage (.vscode/local-copilot/whiteboard.json)
     const persisted = await this.loadWhiteboardFromDisk();
-    const hasExistingState = persisted && (persisted.executionPlan || persisted.modifiedFiles?.length > 0);
+    const isContinuation = this.isContinuation;
+
+    let currentTaskSnapshot: SwarmTaskSnapshot;
+    let lastTaskSnapshot = persisted?.lastTask;
+
+    if (isContinuation && persisted?.currentTask) {
+      // Continuation: resume ongoing task session
+      currentTaskSnapshot = {
+        ...persisted.currentTask,
+        updatedAt: Date.now(),
+      };
+    } else {
+      // New Task: archive previous task if present, and initialize brand new isolated task state
+      if (persisted?.currentTask) {
+        lastTaskSnapshot = {
+          ...persisted.currentTask,
+          updatedAt: Date.now(),
+        };
+      }
+      const newTaskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      currentTaskSnapshot = {
+        taskId: newTaskId,
+        userObjective: userGoal,
+        executionPlan: '',
+        scratchpad: persisted?.scratchpad || persisted?.currentTask?.scratchpad || '',
+        modifiedFiles: [],
+        diagnostics: [],
+        delegationHistory: [],
+        completed: false,
+        updatedAt: Date.now(),
+      };
+    }
 
     this.whiteboard = {
-      userObjective: userGoal,
-      executionPlan: persisted?.executionPlan || '',
-      scratchpad: persisted?.scratchpad || '',
+      version: 2,
+      activeTaskId: currentTaskSnapshot.taskId,
+      currentTask: currentTaskSnapshot,
+      lastTask: isContinuation ? persisted?.lastTask : lastTaskSnapshot,
+      projectContext: persisted?.projectContext || { architecturalNotes: '', keyDecisions: [] },
+      userObjective: currentTaskSnapshot.userObjective,
+      executionPlan: currentTaskSnapshot.executionPlan,
+      scratchpad: currentTaskSnapshot.scratchpad,
       activeAgent: 'orchestrator',
-      delegationHistory: persisted?.delegationHistory || [],
-      modifiedFiles: persisted?.modifiedFiles || [],
-      diagnostics: []
+      delegationHistory: currentTaskSnapshot.delegationHistory,
+      modifiedFiles: currentTaskSnapshot.modifiedFiles,
+      diagnostics: currentTaskSnapshot.diagnostics,
     };
 
-    if (hasExistingState) {
+    if (isContinuation && persisted?.currentTask && (currentTaskSnapshot.executionPlan || currentTaskSnapshot.modifiedFiles.length > 0)) {
       callbacks.onProgress?.({
         icon: '💾',
-        message: `Hydrated persistent Whiteboard: ${this.whiteboard.modifiedFiles.length} known modified files, existing roadmap restored.`,
+        message: `Continued task session (${currentTaskSnapshot.taskId}): ${currentTaskSnapshot.modifiedFiles.length} modified files and roadmap restored.`,
         agentRole: 'orchestrator',
         agentName: 'Swarm Orchestrator',
-        agentColor: '#a855f7'
+        agentColor: '#a855f7',
       });
     }
 
@@ -186,7 +259,11 @@ export class SwarmOrchestrator {
           activeModel,
           this.orchestratorHistory,
           orchDef.tools,
-          signal
+          signal,
+          {
+            num_ctx: this.numCtx,
+            temperature: Math.min(this.temperature, 0.1),
+          }
         );
 
         this.orchestratorHistory.push(responseMsg);
@@ -258,15 +335,40 @@ export class SwarmOrchestrator {
             this.currentAgentRole = target;
             break; // Execute sub-agent immediately
           } else if (toolName === 'finish_task') {
+            // Task Verification Evidence Requirement:
+            // If code was modified during this session, verify that tester reviewed diagnostics or build
+            const currentMods = this.whiteboard.currentTask?.modifiedFiles || this.whiteboard.modifiedFiles || [];
+            if (currentMods.length > 0) {
+              const currentHistory = this.whiteboard.currentTask?.delegationHistory || this.whiteboard.delegationHistory || [];
+              const hasTesterVerification = currentHistory.some(
+                (d) => d.to === 'tester' && d.status === 'success'
+              );
+              if (!hasTesterVerification && turns < this.maxTurns - 2) {
+                // Reject premature finish and request verification
+                this.orchestratorHistory.push({
+                  role: 'tool',
+                  name: 'finish_task',
+                  content: `Verification Required: You modified files (${currentMods.join(
+                    ', '
+                  )}), but have not yet delegated verification to 'tester'. Please delegate to 'tester' to inspect LSP diagnostics and verify the solution before completing.`,
+                });
+                continue;
+              }
+            }
+
             finalAnswer = args.final_summary || responseMsg.content || 'Swarm task completed.';
             isTaskFinished = true;
+            if (this.whiteboard.currentTask) {
+              this.whiteboard.currentTask.completed = true;
+              this.whiteboard.currentTask.updatedAt = Date.now();
+            }
             await this.saveWhiteboardToDisk();
             callbacks.onProgress?.({
               icon: '🏁',
               message: 'Orchestrator finalized all tasks and verification.',
               agentRole: 'orchestrator',
               agentName: orchDef.name,
-              agentColor: orchDef.color
+              agentColor: orchDef.color,
             });
             break;
           } else if (toolName === 'ask_user') {
@@ -400,6 +502,7 @@ export class SwarmOrchestrator {
 
     let subIterations = 0;
     const maxSubIterations = 8;
+    const recentSignatures: string[] = [];
 
     while (subIterations < maxSubIterations) {
       if (signal?.aborted) throw new Error('Sub-agent execution aborted.');
@@ -409,7 +512,11 @@ export class SwarmOrchestrator {
         modelName,
         subHistory,
         subDef.tools,
-        signal
+        signal,
+        {
+          num_ctx: this.numCtx,
+          temperature: Math.min(this.temperature, 0.1),
+        }
       );
 
       subHistory.push(subResponse);
@@ -430,6 +537,22 @@ export class SwarmOrchestrator {
           status: 'success',
           summary: cleanContent || `${subDef.name} completed instructions without additional tools.`
         };
+      }
+
+      // Repetition loop defense
+      for (const call of toolCalls) {
+        const sig = `${call.function.name}:${JSON.stringify(call.function.arguments || {})}`;
+        recentSignatures.push(sig);
+        if (
+          recentSignatures.length >= 3 &&
+          recentSignatures[recentSignatures.length - 1] === recentSignatures[recentSignatures.length - 2] &&
+          recentSignatures[recentSignatures.length - 2] === recentSignatures[recentSignatures.length - 3]
+        ) {
+          return {
+            status: 'failure',
+            summary: `Sub-agent ${subDef.name} terminated: repetitive loop detected on tool '${call.function.name}'.`,
+          };
+        }
       }
 
       for (const call of toolCalls) {
@@ -538,33 +661,96 @@ export class SwarmOrchestrator {
   ): Promise<ToolResult> {
     const agentDef = getAgentDefinition(role);
 
-    // Safety Tiering Check for destructive operations
-    if (!this.autonomousMode && AgentToolService.isDestructiveTool(toolName)) {
-      if (callbacks.requestApproval) {
-        const desc = this.formatApprovalDesc(toolName, args);
-        callbacks.onProgress?.({
-          icon: '🛡️',
-          message: `Approval requested for ${toolName} on ${args.filePath || 'command'}`,
-          agentRole: role,
-          agentName: agentDef.name,
-          agentColor: agentDef.color
-        });
-
-        const approved = await callbacks.requestApproval({
-          id: callId,
-          toolName,
-          args,
-          description: desc
-        });
-
-        if (!approved) {
+    // Command security pre-check
+    let commandTier: CommandTier | undefined;
+    if (toolName === 'execute_command') {
+      try {
+        const classification = CommandClassifier.classify(args.command || '');
+        commandTier = classification.tier;
+        if (classification.tier === CommandTier.TIER_4_PROHIBITED) {
           return {
             toolCallId: callId,
             name: toolName,
             success: false,
-            output: `Operation cancelled by user.`
+            output: `Command rejected by security policy: ${classification.reason}`,
           };
         }
+      } catch (err: any) {
+        return {
+          toolCallId: callId,
+          name: toolName,
+          success: false,
+          output: `Command syntax rejected: ${err.message}`,
+        };
+      }
+    }
+
+    // Safety Tiering Check:
+    // 1. In non-autonomous mode: all destructive tools require approval.
+    // 2. In autonomous mode: Tier 2 and Tier 3 commands require approval as an unbypassable guardrail.
+    // 3. Autonomous Sensitive Target Defense: Any modification to .git/, .github/, .env, package.json,
+    //    or shell scripts requires developer approval even in autonomous mode (Prompt Injection Defense).
+    // 4. Batch Hard Cap: Any transactional patch touching > 10 files requires approval.
+    const isDestructive = AgentToolService.isDestructiveTool(toolName);
+    let touchesSensitiveTarget = false;
+
+    if (toolName === 'create_file' || toolName === 'str_replace' || toolName === 'apply_patch') {
+      if (args.filePath && PathSecurity.isSensitiveTarget(args.filePath)) {
+        touchesSensitiveTarget = true;
+      }
+    } else if (toolName === 'apply_transactional_patches') {
+      const patches = Array.isArray(args.patches) ? args.patches : [];
+      if (patches.length > 10) touchesSensitiveTarget = true;
+      for (const p of patches) {
+        if (p.filePath && PathSecurity.isSensitiveTarget(p.filePath)) {
+          touchesSensitiveTarget = true;
+          break;
+        }
+      }
+    }
+
+    const requiresApproval =
+      (!this.autonomousMode && isDestructive) ||
+      touchesSensitiveTarget ||
+      (this.autonomousMode &&
+        toolName === 'execute_command' &&
+        (commandTier === CommandTier.TIER_2_PROJECT_EXECUTION ||
+          commandTier === CommandTier.TIER_3_ARBITRARY_COMMAND));
+
+    if (requiresApproval) {
+      if (!callbacks.requestApproval) {
+        // FAIL-CLOSED: Approval is required but no handler provided
+        return {
+          toolCallId: callId,
+          name: toolName,
+          success: false,
+          output: `Execution denied: Tool '${toolName}' requires user approval and no approval handler is available (fail-closed policy).`,
+        };
+      }
+
+      const desc = this.formatApprovalDesc(toolName, args);
+      callbacks.onProgress?.({
+        icon: '🛡️',
+        message: `Approval requested for ${toolName} on ${args.filePath || args.command || 'operation'}`,
+        agentRole: role,
+        agentName: agentDef.name,
+        agentColor: agentDef.color,
+      });
+
+      const approved = await callbacks.requestApproval({
+        id: callId,
+        toolName,
+        args,
+        description: desc,
+      });
+
+      if (!approved) {
+        return {
+          toolCallId: callId,
+          name: toolName,
+          success: false,
+          output: `Operation cancelled by user.`,
+        };
       }
     }
 
@@ -742,8 +928,9 @@ export class SwarmOrchestrator {
       totalChars += (msg.content?.length || 0);
     }
 
-    // Keep context under ~40k characters (~10,000 tokens)
-    if (totalChars > 40000 && history.length > 6) {
+    // Scale threshold dynamically from numCtx (~2.5 chars per token)
+    const thresholdChars = Math.floor(this.numCtx * 2.5);
+    if (totalChars > thresholdChars && history.length > 6) {
       const systemMsg = history[0];
       const initialUser = history[1];
       const recentTurns = history.slice(-4);
@@ -764,30 +951,76 @@ export class SwarmOrchestrator {
   private getWhiteboardFileUri(): vscode.Uri | null {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) return null;
-    return vscode.Uri.joinPath(folders[0].uri, '.vscode', 'local-copilot', 'whiteboard.json');
+    const baseUri = this.workspaceRootUri || folders[0].uri;
+    return vscode.Uri.joinPath(baseUri, '.vscode', 'local-copilot', 'whiteboard.json');
   }
 
   public async saveWhiteboardToDisk(): Promise<void> {
     const fileUri = this.getWhiteboardFileUri();
     if (!fileUri || !this.whiteboard) return;
-    try {
-      const dirUri = vscode.Uri.joinPath(fileUri, '..');
-      await vscode.workspace.fs.createDirectory(dirUri);
-      const json = JSON.stringify(this.whiteboard, null, 2);
-      await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(json));
-    } catch (err) {
-      console.warn('Failed to persist whiteboard.json:', err);
+
+    if (this.whiteboard.currentTask) {
+      this.whiteboard.currentTask.userObjective = this.whiteboard.userObjective || this.whiteboard.currentTask.userObjective;
+      this.whiteboard.currentTask.executionPlan = this.whiteboard.executionPlan || '';
+      this.whiteboard.currentTask.scratchpad = this.whiteboard.scratchpad || '';
+      this.whiteboard.currentTask.modifiedFiles = this.whiteboard.modifiedFiles || [];
+      this.whiteboard.currentTask.diagnostics = this.whiteboard.diagnostics || [];
+      this.whiteboard.currentTask.delegationHistory = this.whiteboard.delegationHistory || [];
+      this.whiteboard.currentTask.updatedAt = Date.now();
     }
+
+    await AtomicFileWriter.writeJson(fileUri, this.whiteboard);
   }
 
   public async loadWhiteboardFromDisk(): Promise<SwarmWhiteboard | null> {
     const fileUri = this.getWhiteboardFileUri();
     if (!fileUri) return null;
     try {
-      const data = await vscode.workspace.fs.readFile(fileUri);
-      const text = new TextDecoder('utf-8').decode(data);
-      const parsed = JSON.parse(text) as SwarmWhiteboard;
-      return parsed;
+      const parsed = await AtomicFileWriter.readJson<any>(fileUri, null);
+
+      if (!parsed || typeof parsed !== 'object') return null;
+
+      if (parsed.version === 2 && parsed.currentTask) {
+        parsed.userObjective = parsed.currentTask.userObjective || '';
+        parsed.executionPlan = parsed.currentTask.executionPlan || '';
+        parsed.scratchpad = parsed.currentTask.scratchpad || '';
+        parsed.activeAgent = parsed.activeAgent || 'orchestrator';
+        parsed.delegationHistory = parsed.currentTask.delegationHistory || [];
+        parsed.modifiedFiles = parsed.currentTask.modifiedFiles || [];
+        parsed.diagnostics = parsed.currentTask.diagnostics || [];
+        return parsed as SwarmWhiteboard;
+      }
+
+      // Legacy v1 format migration to v2
+      const legacyTaskId = parsed.taskId || `task_migrated_${Date.now()}`;
+      const legacyTask: SwarmTaskSnapshot = {
+        taskId: legacyTaskId,
+        userObjective: parsed.userObjective || '',
+        executionPlan: parsed.executionPlan || '',
+        scratchpad: parsed.scratchpad || '',
+        modifiedFiles: Array.isArray(parsed.modifiedFiles) ? parsed.modifiedFiles : [],
+        diagnostics: Array.isArray(parsed.diagnostics) ? parsed.diagnostics : [],
+        delegationHistory: Array.isArray(parsed.delegationHistory) ? parsed.delegationHistory : [],
+        completed: false,
+        updatedAt: Date.now(),
+      };
+
+      const migrated: SwarmWhiteboard = {
+        version: 2,
+        activeTaskId: legacyTaskId,
+        currentTask: legacyTask,
+        lastTask: undefined,
+        projectContext: { architecturalNotes: '', keyDecisions: [] },
+        userObjective: legacyTask.userObjective,
+        executionPlan: legacyTask.executionPlan,
+        scratchpad: legacyTask.scratchpad,
+        activeAgent: parsed.activeAgent || 'orchestrator',
+        delegationHistory: legacyTask.delegationHistory,
+        modifiedFiles: legacyTask.modifiedFiles,
+        diagnostics: legacyTask.diagnostics,
+      };
+
+      return migrated;
     } catch {
       return null;
     }

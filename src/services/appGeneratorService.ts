@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { OllamaService } from './ollamaService';
 import { AgentToolService } from './agentToolService';
+import { WorkspaceManager } from './workspaceManager';
 
 export interface PlanStep {
   name: string;
@@ -18,14 +19,15 @@ export class AppGeneratorService {
     model: string,
     ollamaService: OllamaService,
     onProgress: (statusMessage: string) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    targetRootUri?: vscode.Uri
   ): Promise<void> {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders || folders.length === 0) {
+    const targetFolder = WorkspaceManager.getTargetWorkspaceFolder(targetRootUri);
+    if (!targetFolder) {
       throw new Error('Please open an empty folder in VS Code first to create the app.');
     }
 
-    const rootUri = folders[0].uri;
+    const rootUri = targetFolder.uri;
 
     // Determine Entity name from description (e.g. TaskItem, Product, Note)
     const entityName = this.extractEntityName(appDescription);
@@ -36,9 +38,9 @@ export class AppGeneratorService {
     // STEP 1: Scaffolding
     onProgress(`[Step 1/7] 📦 Scaffolding .NET Web API and Angular projects...`);
     try {
-      await AgentToolService.executeCommand(
-        'dotnet new webapi -n Backend.Api --use-controllers && cd Backend.Api && dotnet add package Microsoft.EntityFrameworkCore.InMemory'
-      );
+      await AgentToolService.executeCommand('dotnet new webapi -n Backend.Api --use-controllers');
+      if (signal?.aborted) return;
+      await AgentToolService.executeCommand('dotnet add Backend.Api/Backend.Api.csproj package Microsoft.EntityFrameworkCore.InMemory');
       onProgress(`✅ .NET Web API project scaffolded with EF Core InMemory.`);
     } catch (e: any) {
       onProgress(`⚠️ Note on scaffolding: ${e.message}`);

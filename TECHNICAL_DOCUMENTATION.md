@@ -2,19 +2,19 @@
 
 ## 1. Executive Summary
 
-**Local Copilot Chat** is a local-first, privacy-centric autonomous coding assistant built as a native Visual Studio Code extension. Inspired by GitHub Copilot Chat, Cursor Composer, and Claude Code, it runs 100% locally through [Ollama](https://ollama.com), requiring zero cloud connectivity or subscription keys.
+**Local Copilot Chat** is a local-first, privacy-centric autonomous coding assistant built as a native Visual Studio Code extension. Inspired by GitHub Copilot Chat, Cursor Composer, and Claude Code, it runs 100% locally through [Ollama](https://ollama.com), requiring zero cloud connectivity or external API subscription keys.
 
-### Key Milestones Delivered:
-1. **Model Switcher & Ollama Bridge**: Dynamic dropdown querying `http://127.0.0.1:11434/api/tags` to seamlessly toggle between **`qwen3.5:9b`**, **`deepseek-r1:8b`**, and **`qwen2.5-coder:7b`**.
-2. **DeepSeek Reasoning Accordion**: Native real-time streaming parser for `<think>` and `</think>` tags, encapsulating chain-of-thought tokens in a collapsible UI element.
-3. **ChatGPT-Style Mode Switcher (`💬 Chat` vs `⚡ Agent`)**: Distinct UI separation between reactive streaming Q&A (no side-effects) and autonomous multi-turn ReAct problem solving.
+### Key Architectural Capabilities Delivered:
+1. **Model Switcher & Dynamic Ollama Bridge**: Dynamic dropdown querying `http://127.0.0.1:11434/api/tags` to seamlessly toggle between models (`qwen3.5:9b`, `deepseek-r1:8b`, `qwen2.5-coder:7b`) with connection health state badges (`🟢 Online`, `🔄 Connecting...`, `🟡 No Models`, `🔴 Offline`), actionable retry banners, and stale response discard.
+2. **DeepSeek Reasoning Accordion & Streaming Thought Separation**: Intercepts `<think>` and `</think>` tags in real time during streaming, encapsulating chain-of-thought tokens inside a collapsible `<details class="think-box">` UI element while keeping user-facing text clean.
+3. **ChatGPT-Style Mode Switcher (`💬 Chat` vs `⚡ Agent`)**: Clear UI separation between reactive streaming Q&A (no side-effects) and autonomous multi-turn ReAct problem solving.
 4. **"Working..." Progress Accordion**: Real-time collapsing status card displaying live timeline steps (`🔄 Reading...`, `🛠️ Applying edit...`, `⚠️ Self-correcting LSP...`) culminating in `✅ Finished (X steps)`.
 5. **Human-in-the-Loop "Pause & Ask" (`ask_user`)**: Autonomous agent can halt execution mid-task to seek clarification with inline question inputs or unlocked chat fields, resuming seamlessly on response.
 6. **Workspace Context Scanner**: Intelligent directory tree crawler and manifest reader (`.slnx`, `.csproj`, `package.json`, `README.md`) with active editor selection extraction.
 7. **Autonomous File Creation (`⚡ Auto-Write`)**: Regex-driven filename detector and one-click `[📄 Create File]` writer that directly creates and opens files on disk.
-8. **Interactive Terminal Integration (`▶️ Run in Terminal`)**: Detects shell blocks (`dotnet`, `ng`, `npm`, `git`) and executes them directly in the VS Code terminal.
+8. **Interactive Terminal Integration (`▶️ Run in Terminal`)**: Detects shell blocks (`dotnet`, `npm`, `git`) and executes them directly in the VS Code terminal.
 9. **Autonomous App Generator (`/create-app`)**: 7-stage autonomous planner that scaffolds and synthesizes complete full-stack .NET Web API + Angular applications from a single instruction.
-10. **Claude Code ReAct Agent Engine (`autonomousAgent.ts`)**: Multi-turn autonomous loop (up to 20 iterations) executing tool detection, JSON function invocation, and result evaluation.
+10. **Claude Code ReAct Agent Engine (`autonomousAgent.ts`)**: Multi-turn autonomous loop executing tool detection, JSON function invocation, and result evaluation.
 11. **Surgical Code Editor (`str_replace`)**: Fine-grained string replacement with uniqueness validation, eliminating hallucinated full-file overwrites.
 12. **Native LSP Diagnostics & Self-Healing Loop**: Hooks into `vscode.languages.getDiagnostics()` after edits to capture C#/TypeScript compiler errors and autonomously patch them.
 13. **Human-in-the-Loop Safety Tiering**: `⚡ Auto: ON` / `🛡️ Auto: OFF` toggle switch prompting developers with interactive `[Approve]` / `[Deny]` confirmation cards before destructive disk edits or command runs.
@@ -24,9 +24,12 @@
 17. **Shared Memory Bus ("Whiteboard") & Sub-Agent Protocol**: Centralized objective, roadmap, scratchpad, and surgical delegation protocol using `delegate_task`, `hand_back`, and `finish_task`.
 18. **RAG Long-Term Memory & Local Vector Store (`memoryService.ts`)**: 768-dimensional local vector store powered by `nomic-embed-text` with cosine similarity retrieval, offloading large context into the host's 32GB RAM.
 19. **Persistent State Bus (.vscode/local-copilot/)**: Automatic serialization and hydration of `whiteboard.json` and `memory.json`, enabling seamless task resumption across IDE reloads.
-20. **Bulletproof Segmented Mode Toggle Binding**: Direct DOM event binding for `#btn-mode-chat` and `#btn-mode-agent` updating `#chat-mode-label`, input placeholders, button labels, and passing `{ mode: currentMode }` across the RPC boundary to the Extension Host.
-21. **Zero-Latency Heuristic Model Router (`modelRouter.ts`)**: Fast keyword intent classifier that auto-routes prompts without LLM inference delay—reasoning & architecture prompts map to `deepseek-r1:8b`, code synthesis & execution prompts map to `qwen2.5-coder:7b`, with seamless Agent Mode swarm delegation.
-22. **Auto Model Selection (`⚡ Auto (Recommended)`)**: Pre-selected dropdown default that preserves dynamic Ollama model listings while guaranteeing optimal model assignment per prompt.
+20. **Zero-Latency Heuristic Model Router (`modelRouter.ts`)**: Fast keyword intent classifier that auto-routes prompts without LLM inference delay—reasoning & architecture prompts map to `deepseek-r1:8b`, code synthesis & execution prompts map to `qwen2.5-coder:7b`, with seamless Agent Mode swarm delegation.
+21. **Code Block UX & Clipboard Fallback**: Prominent `📋 Copy` button with temporary `✓ Copied!` checkmark feedback, comprehensive language-to-extension dictionary mapping, and extension host clipboard fallback.
+22. **Runtime Configuration Architecture (`configurationService.ts`)**: Centralized single source of truth managing `numCtx` (default 16384), `temperature` (default 0.2), and `maxTurns` (default 25) with clamping, validation, live change events, and a deterministic tool-calling temperature ceiling $\le 0.1$.
+23. **Security Hardening (Phase 1)**: Filesystem boundary resolution (`resolveSecurePath`), Windows NTFS directory junction and symlink containment, 4-tier command classification (`CommandClassifier`), host executable resolution (`ExecutableResolver`), Git execution isolation (`GitExecutionIsolator`), strict Webview Content Security Policy, and message schema validation (`MessageValidator`).
+24. **Evidence Verification Gate & Loop Breaker (Phase 3)**: Orchestrator rejects premature `finish_task` calls if files were modified until the `tester` sub-agent reviews diagnostics and confirms workspace stability. Consecutive identical sub-agent tool call loops are automatically terminated.
+25. **Persistent Conversation History (Phase 5)**: User and agent conversation turns are automatically saved to `.vscode/local-copilot/chat_history.json` and rehydrated upon extension startup.
 
 ---
 
@@ -35,9 +38,18 @@
 ```mermaid
 graph TD
     subgraph "VS Code Extension Host (Node.js)"
-        Ext[extension.ts: Activation & Commands]
+        Ext[extension.ts: Activation & Lifecycle]
+        Config[ConfigurationService: Settings & Event Emitters]
         CVP[ChatViewProvider: UI Manager & Event Router]
+        Val[MessageValidator: RPC Contract Validation]
         
+        subgraph "Security Boundary Layer"
+            SecPath[resolveSecurePath: Symlink & Junction Guards]
+            CmdClass[CommandClassifier: 4-Tier Security Matrix]
+            ExeRes[ExecutableResolver: Host Binary Resolution]
+            GitIso[GitExecutionIsolator: Argument & Env Sanitizer]
+        end
+
         subgraph "Hierarchical Swarm Core"
             Swarm[SwarmOrchestrator: State Machine & Router]
             Whiteboard[(Shared Memory Bus: Whiteboard)]
@@ -54,7 +66,10 @@ graph TD
             P4[🔬 Tester: LSP Diagnostics & Build Audit]
         end
 
+        Ext --> Config
         Ext --> CVP
+        CVP --> Val
+        Val --> CVP
         CVP --> Swarm
         Swarm <--> Whiteboard
         Swarm <--> Memory
@@ -64,322 +79,304 @@ graph TD
         Registry --- P3
         Registry --- P4
         Swarm --> ATS
+        ATS --> SecPath
+        ATS --> CmdClass
+        ATS --> ExeRes
+        ATS --> GitIso
         Swarm --> OS
     end
 
     subgraph "Persistent Storage (.vscode/local-copilot/)"
-        F1[(whiteboard.json<br/>State Persistence)]
-        F2[(memory.json<br/>768-dim Vector Embeddings)]
+        WB_JSON[whiteboard.json: Roadmap & Delegation Bus]
+        MEM_JSON[memory.json: 768-dim Vector Embeddings]
+        HIST_JSON[chat_history.json: Multi-Session Chat Logs]
     end
 
-    subgraph "Local AI Runtime (Ollama Daemon - 8GB VRAM Sliced)"
-        OLLAMA[localhost:11434]
-        M1[(deepseek-r1:8b<br/>Orchestrator &amp; Planner)]
-        M2[(qwen2.5-coder:7b<br/>Coder &amp; Tester)]
-        M3[(qwen3.5:9b<br/>Unified Driver Fallback)]
-        M4[(nomic-embed-text<br/>Fast Vector Embeddings)]
-        OLLAMA --- M1
-        OLLAMA --- M2
-        OLLAMA --- M3
-        OLLAMA --- M4
+    Whiteboard <--> WB_JSON
+    Memory <--> MEM_JSON
+    CVP <--> HIST_JSON
+
+    subgraph "Ollama Engine (Localhost :11434)"
+        R1[deepseek-r1:8b: Reasoning]
+        QwenCoder[qwen2.5-coder:7b: Tool Calling]
+        Embed[nomic-embed-text: 768-dim Embeddings]
     end
 
-    subgraph "Language Server & OS Host"
-        LSP[VS Code Language Server Protocol<br/>C# OmniSharp / Roslyn / TS Server]
-        RG[Bundled Ripgrep Binary: rg.exe]
-        FS[Workspace Filesystem]
-        Term[Integrated Terminal]
-    end
-
-    Whiteboard <-->|fs.writeFile / readFile| F1
-    Memory <-->|fs.writeFile / readFile| F2
-    ATS <-->|vscode.languages.getDiagnostics| LSP
-    ATS <-->|execFile| RG
-    ATS <-->|vscode.workspace.applyEdit / fs| FS
-    CVP <-->|vscode.window.createTerminal| Term
-    OS <-->|POST /api/chat & keep_alive:0| OLLAMA
-    Memory <-->|POST /api/embeddings| OLLAMA
+    OS <--> R1
+    OS <--> QwenCoder
+    Memory <--> Embed
 ```
 
 ---
 
-## 3. Detailed Component Architecture
+## 3. Subsystem Specifications
 
-### 3.1. Unified ReAct Agent Runtime ([`src/services/autonomousAgent.ts`](file:///c:/Projects/local-copilot-chat/src/services/autonomousAgent.ts))
-Coordinates multi-turn reasoning and tool execution loops (bounded to `maxIterations = 20`):
+### 3.1 Security Architecture (Phase 1)
 
-```typescript
-export class AutonomousAgent {
-  public async executeTask(
-    userGoal: string,
-    callbacks: AgentCallbacks,
-    signal?: AbortSignal
-  ): Promise<string>
-}
-```
+#### 1. Filesystem Containment (`AgentToolService.resolveSecurePath`)
+- **Traversal Prevention**: Rejects relative path segments `..`, null bytes, and UNC paths (`\\server\share`) prior to normalization.
+- **Physical Symlink & Junction Guards**: Employs `fs.realpathSync` to ensure symbolic links and Windows NTFS directory junctions resolve within the active workspace root.
+- **Internal State Protection**: Forbids agent tools from accessing `.vscode/local-copilot/` directly; internal storage is exclusively accessible through `AgentToolService.getTrustedInternalStateUri`.
+- **Multi-Root Workspace Determinism**: Requires paths in multi-root workspaces to explicitly designate the target root folder name, preventing ambiguous writes.
 
-* **Phase 1: Architectural Planning**: Queries a reasoning model (`deepseek-r1:8b` or `qwen3.5:9b`) to plan the technical roadmap, parsing chain-of-thought tokens into `<details class="think-box">`.
-* **Phase 2: Tool Execution Loop**: Queries the execution model with Ollama JSON-schema function definitions. When tool calls are emitted:
-  1. Checks safety classification (`isDestructiveTool`).
-  2. If non-autonomous, emits an interactive approval card to the Webview.
-  3. Executes the action via `AgentToolService`.
-  4. Inspects Language Server diagnostics.
-  5. Feeds results back into conversation history as `{ role: 'tool', content: ... }`.
-* **Context Compaction**: Monitors cumulative character length. When messages exceed ~45,000 characters (~11,000 tokens of the 16k window), intermediate tool outputs are compacted, preserving the system prompt, initial goal, and the latest turns.
+#### 2. Command Execution Security (`CommandClassifier`, `ExecutableResolver`, `GitExecutionIsolator`)
+- **4-Tier Command Matrix**:
+  - **Tier 1 (Safe Read-Only)**: `git status`, `git diff` (whitelisted flags), `git log`, tool version queries (`node --version`). Executed without approval.
+  - **Tier 2 (Project Execution)**: `npm test`, `npm start`, `dotnet build`, `dotnet test`, `pytest`. Requires approval in non-autonomous and autonomous modes.
+  - **Tier 3 (Arbitrary & Mutating)**: `npm install`, `npx`, `dotnet add`, mutating Git commands (`git commit`, `git checkout`). Requires approval unconditionally.
+  - **Tier 4 (Prohibited)**: Shell scripts (`.bat`, `.cmd`, `.ps1`, `.vbs`, `.sh`), interactive shells (`bash`, `pwsh`, `cmd`), privilege escalation (`sudo`, `runas`), downloaders (`curl`, `wget`), and destructive disk tools (`rm -rf`, `format`). Fail-closed rejection.
+- **Non-Shell Spawn**: Commands run with `child_process.spawn(..., { shell: false })` to eliminate shell injection vulnerabilities.
+- **Git Isolation**: Injects `--no-pager`, `--no-ext-diff`, and `--no-textconv`. Sanitizes environment variables with `GIT_CONFIG_COUNT=0`, `GIT_OPTIONAL_LOCKS=0`, and `GIT_TERMINAL_PROMPT=0`.
 
----
-
-### 3.2. Model Orchestration Matrix ([`src/services/ollamaService.ts`](file:///c:/Projects/local-copilot-chat/src/services/ollamaService.ts))
-
-The extension dynamically selects the optimal model for each phase based on user selection and availability:
-
-| User Selected Model | Phase 1: Planning / Root-Cause | Phase 2: Autonomous Tool Calling & Surgical Editing |
-| :--- | :--- | :--- |
-| **`qwen3.5:9b`** | **`qwen3.5:9b`** (Takes full control with its 9B reasoning capacity) | **`qwen3.5:9b`** (Unified driver for tool invocation, file editing, and verification) |
-| **`deepseek-r1:8b`** | **`deepseek-r1:8b`** (Extracts deep chain-of-thought `<think>` reasoning) | **`qwen3.5:9b`** (or `qwen2.5-coder:7b` fallback for clean JSON tool adherence) |
-| **`qwen2.5-coder:7b`** | **`deepseek-r1:8b`** (If installed, provides architecture plan) | **`qwen2.5-coder:7b`** (High-speed C# / TypeScript syntax synthesis) |
+#### 3. Webview Content Security Policy & Message Validation
+- **CSP Restrictions**: Meta tag restricts resource loading to `default-src 'none'`.
+- **Message Contracts (`MessageValidator`)**: Strictly typed validator verifying incoming webview messages against an allowed type whitelist and validating payload parameters. Dispatches `rpcError` on malformed messages.
 
 ---
 
-### 3.3. Surgical Code Editing Engine ([`src/services/agentToolService.ts`](file:///c:/Projects/local-copilot-chat/src/services/agentToolService.ts))
+### 3.2 Runtime & Configuration Architecture (Deliverable A & Phase 2)
 
-Replaces dangerous full-file overwrites with fine-grained operations:
+#### 1. Configuration Service (`ConfigurationService.ts`)
+A centralized singleton manages all VS Code user settings:
+- `localCopilot.numCtx` (default: 16384, bounds: 2048–65536)
+- `localCopilot.temperature` (default: 0.2, bounds: 0.0–1.0)
+- `localCopilot.maxTurns` (default: 25, bounds: 1–100)
+- `localCopilot.ollamaEndpoint` (default: `http://127.0.0.1:11434`)
+- `localCopilot.defaultModel` (default: `qwen2.5-coder:7b`)
 
-| Tool Primitive | Signature | Functionality |
-| :--- | :--- | :--- |
-| **`view_file_range`** | `(filePath, startLine, endLine)` | Reads specific intervals with prepended `L<number>:` prefixes, minimizing context window consumption. |
-| **`str_replace`** | `(filePath, oldStr, newStr)` | Surgically swaps exact unique blocks via `vscode.workspace.applyEdit`. Validates that `oldStr` exists and is unique; if ambiguous, returns line numbers of all occurrences. |
-| **`apply_patch`** | `(filePath, patchContent)` | Parses unified diff hunks and applies changes. |
-| **`create_file`** | `(filePath, content)` | Creates new files and missing parent directories using `vscode.workspace.fs.writeFile`. |
-| **`search_workspace`** | `(query, maxResults)` | Runs VS Code's internal bundled `rg.exe` (Ripgrep) binary, falling back to `vscode.workspace.findFiles`. |
-| **`execute_command`** | `(command)` | Runs terminal commands via `child_process.exec` in the workspace root with timeout handling. |
-| **`get_diagnostics`** | `(filePath?)` | Inspects VS Code Language Server Protocol errors and warnings. |
-| **`list_dir`** | `(dirPath?)` | Enumerates directory entries. |
+#### 2. Deterministic Tool Temperature Ceiling
+While conversational chat uses user-configured temperature (0.2), all agent and swarm tool-calling invocations enforce a strict deterministic ceiling:
+$$\text{Tool Temperature} = \min(\text{temperature}, 0.1)$$
+This ensures consistent JSON formatting and deterministic tool parameters.
 
----
-
-### 3.4. Language Server Diagnostics & Self-Healing Loop
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Agent as AutonomousAgent
-    participant Tools as AgentToolService
-    participant LSP as VS Code Language Server
-    participant Model as Ollama Model
-
-    Agent->>Tools: str_replace("TaskController.cs", oldStr, newStr)
-    Tools->>Tools: applyEdit() & document.save()
-    Tools->>LSP: vscode.languages.getDiagnostics(fileUri)
-    
-    alt Errors Detected
-        LSP-->>Tools: [LSP Error] Line 48:12 - CS1002 ; expected
-        Tools-->>Agent: Output + Diagnostic Alert
-        Agent->>Agent: Inject error into message history
-        Agent->>Model: Query model with compiler error
-        Model-->>Agent: Tool call: str_replace to fix line 48
-        Agent->>Tools: str_replace(fix)
-    else Clean Build
-        LSP-->>Tools: null (Zero errors)
-        Tools-->>Agent: Output: Success
-        Agent->>Model: Proceed to next step
-    end
-```
+#### 3. Dynamic Context Compaction
+When message history length exceeds context capacity, history is dynamically compacted using:
+$$\text{Threshold Chars} = \lfloor \text{numCtx} \times 2.5 \rfloor$$
 
 ---
 
-### 3.5. Human-in-the-Loop Safety & Confirmation Cards ([`src/providers/chatViewProvider.ts`](file:///c:/Projects/local-copilot-chat/src/providers/chatViewProvider.ts))
+### 3.3 Agent Swarm & Delegation Protocol (Phase 3)
 
-* **Autonomous Mode Toggle**: `⚡ Auto: ON` / `🛡️ Auto: OFF` in the header bar.
-* **Safety Tiering**:
-  * *Read-Only (Safe)*: `view_file_range`, `search_workspace`, `list_dir`, `get_diagnostics` run without prompting.
-  * *Destructive*: `str_replace`, `create_file`, `apply_patch`, `execute_command` pause execution when in Approval Mode (`Auto: OFF`), displaying an interactive card:
+#### 1. Specialized Agent Personas
+- **🧠 Orchestrator**: High-level workflow planning, user interaction (`ask_user`), task delegation (`delegate_task`), and memory persistence.
+- **📋 Planner**: Architectural roadmaps, file structure analysis, semantic search.
+- **🧑‍💻 Coder**: Surgical file editing (`str_replace`), file creation (`create_file`), patch application (`apply_patch`).
+- **🔬 Tester**: LSP diagnostics auditing (`get_diagnostics`), build checking (`check_build`), test execution.
 
-```html
-<div class="approval-card" id="approval-call_123">
-  <div class="approval-header">⚠️ Confirmation Required: str_replace</div>
-  <div class="approval-desc">Modify file: Backend.Api/Controllers/TaskController.cs</div>
-  <div class="approval-actions">
-    <button class="btn-approve" onclick="respondApproval('call_123', true)">Approve</button>
-    <button class="btn-deny" onclick="respondApproval('call_123', false)">Deny</button>
-  </div>
-</div>
-```
+#### 2. Evidence Verification Gate
+If workspace files were modified during a swarm session, the orchestrator is blocked from concluding the task prematurely. It must delegate to `tester` to verify diagnostics and build results before `finish_task` is accepted.
+
+#### 3. Repetition Loop Defense
+The orchestrator maintains an execution signature buffer. If a sub-agent executes the identical tool with identical parameters 3 consecutive times, the loop is broken and control is returned to the orchestrator with an execution failure report.
 
 ---
 
-### 3.6. ChatGPT-Style Agent Mode UX & Pause-and-Ask Protocol
+### 3.4 Long-Term Memory & Persistent RAG (Phase 4)
 
-#### 1. Segmented Mode Controller (`Chat` vs `Agent`)
-The webview header features a dual-segmented control toggle:
-* **`💬 Chat` Mode**: Routes user prompts to `ollamaService.streamChat()`. Safe, read-only conversational assistant behavior with zero workspace side-effects.
-* **`⚡ Agent` Mode**: Routes user prompts directly into `autonomousAgent.runTask()`. Unlocks native JSON function calling, file editing, diagnostic self-healing, and terminal execution.
+#### 1. Indexing & Exclusion Rules (`MemoryService.isIndexableFile`)
+Strictly rejects:
+- Sensitive secrets: `.env*`, `.pem`, `.key`, `id_rsa`, `id_ed25519`, `credentials.json`, `secrets.json`.
+- Build output & dependencies: `node_modules`, `.git`, `.vscode`, `dist`, `bin`, `obj`, `target`.
+- Binaries & media: `.png`, `.jpg`, `.zip`, `.exe`, `.dll`, `.so`.
 
-#### 2. Real-Time "Working..." Progress Accordion
-During autonomous execution in Agent Mode:
-* A collapsible `<details class="working-accordion" open>` card renders above the response.
-* As the agent reasons, inspects files, edits code, or runs commands, real-time events stream into an internal step list:
-  * `🔄 Reading src/app.component.ts lines 1-45...`
-  * `🛠️ Applied surgical edit to src/app.component.ts`
-  * `⚠️ LSP detected TS2304: Cannot find name 'Item'. Self-correcting...`
-* Upon task termination, the accordion automatically updates its header badge to `✅ Finished (X steps)` and closes, cleanly presenting the final answer below.
+#### 2. Stale Chunk Pruning & Deduplication
+- When files are modified or deleted, existing chunks are pruned via `removeFileChunks`.
+- Semantic search results are deduplicated across identical chunk content and file origins.
 
-#### 3. Human-in-the-Loop Pause & Resume (`ask_user`)
-When the model encounters architectural forks, missing specs, or ambiguity:
-1. Model invokes the schema-defined tool `ask_user(question: string)`.
-2. `autonomousAgent.ts` halts the ReAct loop and holds a pending `Promise<string>`.
-3. An `askUser` event dispatches to the Webview, rendering a highlighted card with an inline input box and unlocking the main prompt input.
-4. The user submits clarification, emitting `agentReply` back to the Extension Host.
-5. The resolver unblocks, pushing `{ role: 'tool', name: 'ask_user', content: userAnswer }` into the message history, allowing the agent to resume execution without context loss.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Agent as AutonomousAgent
-    participant UI as Webview Panel
-    participant User as Developer
-
-    Agent->>Agent: Identifies ambiguity in task requirements
-    Agent->>UI: Tool Call: ask_user("Should this component use signals or RxJS?")
-    UI->>User: Displays interactive question card & unlocks input
-    User->>UI: Types "Use signals with computed properties"
-    UI->>Agent: RPC postMessage: { type: 'agentReply', text: '...' }
-    Agent->>Agent: Resolves pending promise & resumes ReAct loop
-    Agent->>UI: Streams next execution step
-```
+#### 3. Corruption Recovery
+Corrupted state files (`memory.json`, `whiteboard.json`) are automatically quarantined to `.corrupt` backup files, and in-memory stores are initialized cleanly without throwing unhandled exceptions.
 
 ---
 
-### 3.7. Hierarchical Multi-Agent Swarm & VRAM Time-Slicing Protocol ([`src/services/swarmOrchestrator.ts`](file:///c:/Projects/local-copilot-chat/src/services/swarmOrchestrator.ts))
+### 3.5 Webview & Streaming UX (Deliverable A.2 & Phase 5)
 
-#### 1. The Swarm Persona Registry (`agentRegistry.ts`)
-The multi-agent swarm decomposes complex software engineering objectives into specialized personas:
+#### 1. Code Block Copy UX & Language Mapping
+- `📋 Copy` button with temporary visual feedback (`✓ Copied!`) for 1.8 seconds.
+- Multi-tier clipboard resolution: browser `navigator.clipboard` with fallback to `vscode.env.clipboard.writeText` via extension host RPC.
+- Language mapping dictionary mapping aliases (`csharp` $\to$ `.cs`, `python` $\to$ `.py`, `typescript` $\to$ `.ts`).
 
-| Persona | Role | Model Assignment | Scoped Toolset | Responsibilities |
-| :--- | :--- | :--- | :--- | :--- |
-| **🧠 Orchestrator** | `orchestrator` | `deepseek-r1:8b` / `qwen3.5:9b` | `delegate_task`, `ask_user`, `finish_task`, `view_file_range`, `search_workspace`, `list_dir` | Primary router. Breaks user input down, coordinates delegations, pauses for human input, and evaluates final reports. |
-| **📋 Planner** | `planner` | `deepseek-r1:8b` / `qwen3.5:9b` | `view_file_range`, `search_workspace`, `list_dir`, `hand_back` | Architecture analyst. Inspects workspace structure and formulates step-by-step Markdown checklists. |
-| **🧑‍💻 Coder** | `coder` | `qwen2.5-coder:7b` / `qwen3.5:9b` | `str_replace`, `create_file`, `apply_patch`, `view_file_range`, `search_workspace`, `hand_back` | Execution engine. Performs surgical edits with uniqueness validation and generates code according to specs. |
-| **🔬 Tester** | `tester` | `qwen2.5-coder:7b` / `qwen3.5:9b` | `get_diagnostics`, `execute_command`, `view_file_range`, `search_workspace`, `hand_back` | Auditor. Queries VS Code Language Server Protocol diagnostics and runs project build verification. |
+#### 2. Real-Time Thought Stream Separation
+- `<think>...</think>` tokens emitted during DeepSeek-R1 streaming are separated from message bubbles.
+- Thoughts stream dynamically into an interactive `<details class="think-box"><summary>💭 Thought process</summary><div class="think-content">...</div></details>` disclosure.
 
-#### 2. The Shared Memory Bus ("Whiteboard")
-A persistent, centralized state machine tracks the life-cycle of the swarm across sequential turns:
-* `userObjective`: The primary, inviolable user instruction.
-* `executionPlan`: Architectural checklist synthesized by the Planner.
-* `scratchpad`: Workspace discoveries, symbol mappings, and notes.
-* `modifiedFiles`: Array of workspace files touched by the Coder.
-* `delegationHistory`: Complete chronological audit of agent hand-offs and outcomes.
-* `diagnostics`: Active compiler and linter diagnostics captured during test rounds.
-
-#### 3. Sub-Agent Delegation Protocol
-Communication between agents is strictly enforced through standard JSON function calling:
-* **`delegate_task`**: Orchestrator hands a bite-sized task to a target agent (`planner`, `coder`, or `tester`), specifying `task_description` and `context_files`.
-* **`hand_back`**: Sub-agents conclude their turn, returning control back to the Orchestrator with an outcome `status` (`success`, `failure`, `needs_clarification`) and a compact `result_summary`.
-* **`finish_task`**: Orchestrator concludes the mission and delivers the final verified response.
-
-#### 4. VRAM-Aware Model Time-Slicing (8GB GPU Ceiling)
-Local consumer hardware typically cannot host both `deepseek-r1:8b` (5.2GB) and `qwen2.5-coder:7b` (4.7GB) simultaneously in 8GB VRAM without severe GPU out-of-memory errors and catastrophic disk swapping.
-* The `SwarmOrchestrator` implements strict **sequential model time-slicing**.
-* Only one model generates tokens at any given moment.
-* When handing off between personas that utilize different models (e.g., from `deepseek-r1:8b` reasoning to `qwen2.5-coder:7b` execution), the engine calls `ollamaService.unloadModel(currentModel)` via `POST /api/generate` with `{ keep_alive: 0 }`.
-* This immediately releases the 5GB of GPU memory before Ollama initializes the incoming model, ensuring zero memory leaks or OOM failures.
-
-#### 5. Multi-Agent Nested UI & Persona Tracking
-The Webview "Working..." progress accordion dynamically displays real-time agent hand-offs:
-* Each timeline step renders a distinct colored badge identifying the active persona:
-  * <span style="background: rgba(168,85,247,0.2); color:#c084fc; padding: 2px 6px; border-radius: 4px; font-weight:bold; font-size:10px;">🧠 SWARM ORCHESTRATOR</span>
-  * <span style="background: rgba(59,130,246,0.2); color:#60a5fa; padding: 2px 6px; border-radius: 4px; font-weight:bold; font-size:10px;">📋 LEAD PLANNER</span>
-  * <span style="background: rgba(16,185,129,0.2); color:#34d399; padding: 2px 6px; border-radius: 4px; font-weight:bold; font-size:10px;">🧑‍💻 SENIOR CODER</span>
-  * <span style="background: rgba(245,158,11,0.2); color:#fbbf24; padding: 2px 6px; border-radius: 4px; font-weight:bold; font-size:10px;">🔬 QUALITY &amp; TEST AUDITOR</span>
+#### 3. Conversation History Restoration
+- Chat turns are serialized to `.vscode/local-copilot/chat_history.json`.
+- Sessions are rehydrated on webview initialization and cleared when the user triggers `clearChat`.
 
 ---
 
-### 3.8. RAG Long-Term Memory & Persistent State Bus ([`src/services/memoryService.ts`](file:///c:/Projects/local-copilot-chat/src/services/memoryService.ts))
+## 4. Phase 5.5 (H1) Production Hardening
 
-#### 1. The Vector Memory Engine
-To prevent polluting the active LLM context window (which must respect the 8GB VRAM constraint), Local Copilot Chat offloads knowledge into an in-memory vector store hosted in the workstation's 32GB system RAM:
-* **Model**: Leverages Ollama's `nomic-embed-text` (768 dimensions, ~274MB memory footprint) via `POST /api/embeddings`.
-* **Fallback Strategy**: Deterministic 768-dimensional token n-gram feature hashing ensures searching and indexing never crash even if Ollama is temporarily offline.
-* **Storage Location**: Serialized strictly to `.vscode/local-copilot/memory.json` in the active workspace.
-* **Auto-Indexing Pipeline**: When the Coder creates or edits files (`create_file`, `str_replace`), the content is automatically chunked into overlapping ~1200-character blocks and indexed in the background.
+All Critical defects (DEFECT-CRIT-01 and DEFECT-CRIT-02) and operational process safety requirements have been implemented and verified:
 
-#### 2. Vector Math: Cosine Similarity
-Relevance scoring utilizes the cosine angle between query and document vectors:
-$$\text{Similarity}(A, B) = \frac{\sum_{i=1}^{n} A_i B_i}{\sqrt{\sum_{i=1}^{n} A_i^2} \cdot \sqrt{\sum_{i=1}^{n} B_i^2}}$$
-Ranked results are returned with similarity percentage and source metadata (`filePath`, `agentOrigin`, `category`).
+### 1. [DEFECT-CRIT-01] Command De-chaining & Internal Caller Audit
+- **`AppGeneratorService.generateFullStackApp`**: Eliminated shell chaining `&&` and shell builtin `cd`. Replaced with sequential individual calls targeting `Backend.Api/Backend.Api.csproj` directly without directory changes.
+- **`AgentToolService.getGitDiff`**: Decoupled `git diff --stat` and `git status --short`. Formats output cleanly when clean or uninitialized.
+- **Internal Callers**: Audited all `executeCommand` invocations in `checkBuild()`, `getGitDiff()`, `AppGeneratorService`, `AutonomousAgent`, and `SwarmOrchestrator` to ensure zero shell metacharacter usage while preserving legitimate argument boundaries.
 
-#### 3. Persistent Whiteboard (.vscode/local-copilot/whiteboard.json)
-The central swarm state bus is automatically saved to disk upon every mutation:
-* When `delegate_task` is called, the delegation history is committed.
-* When sub-agents call `hand_back`, modified files, execution roadmaps, and diagnostics are serialized.
-* On IDE restart, the Swarm Orchestrator checks `.vscode/local-copilot/whiteboard.json` and automatically rehydrates past roadmaps and modified file sets.
+### 2. [DEFECT-CRIT-02] Windows Node.js & Package Manager Resolution (No Shell)
+- **Eliminated Shell Fallbacks**: Completely removed `ComSpec` and `findTrustedCmd`. No `cmd.exe /c` or `{ shell: true }` is ever used.
+- **Trusted Roots & Multi-Layout Inspection**: Enhanced `findNodeAndNpmCli` to canonicalize search roots and locate `node.exe` with `npm-cli.js` / `npx-cli.js` across standard installer, NVM Windows, Volta, fnm, and global npm (`%APPDATA%\npm`).
+- **Strict Anti-Hijack Policy**: Reject any binary or CLI script residing inside or beneath active workspace folders.
+- **Verified Offline Real-Process Execution**: Validated `npm --version` and `npx --version` on Windows using real `node.exe` with `shell: false`.
 
-#### 4. New Memory Tools in Agent Registry
-* **`semantic_search(query, limit?, category?)`**: Queries the vector store for top-K matching code chunks, architectural decisions, or user preferences.
-* **`store_memory(content, category, tags?)`**: Explicitly stores decisions, rules, or preferences (`category: 'decision' | 'architecture' | 'preference' | 'plan' | 'code'`).
-
-#### 5. Webview Memory Status Indicator
-A live status pill in the controls row indicates active indexing:
-* Displays `💾 Memory: Active` or item count badge (`💾 Memory: 12 items`).
-
-### 3.7 Auto-Model Routing & Webview State Architecture
-
-#### 1. Zero-Latency Heuristic Intent Classifier (`modelRouter.ts`)
-To eliminate LLM inference latency, token usage, and VRAM thrashing just to pick a model, `ModelRouter` runs regex word-boundary pattern matching against prompt semantics:
-* **Reasoning / Architecture Rule**:
-  - Keywords: `why`, `explain`, `design`, `architect`, `architecture`, `plan`, `debug`, `trace`, `analyze`, `structure`, `how does`, `compare`, `difference`, `review`, `audit`, `evaluate`, `investigate`, `root cause`.
-  - Optimal Model: **`deepseek-r1:8b`** (with `<think>` reasoning chain).
-* **Coding / Execution Rule**:
-  - Keywords: `write`, `generate`, `create`, `fix`, `refactor`, `add`, `component`, `endpoint`, `implement`, `code`, `function`, `class`, `method`, `patch`, `controller`, `service`, `html`, `css`, `typescript`, `csharp`, `dotnet`, `angular`, `unit test`, `test`, `syntax`, `bug`, `error`.
-  - Optimal Model: **`qwen2.5-coder:7b`** (precise syntax, surgical tool calling).
-* **Agent Mode Override**:
-  - Automatically routes to the Swarm Orchestrator's entry model (DeepSeek-R1 or Qwen 3.5), allowing the multi-agent state machine to time-slice models across execution turns.
-* **Fallback Priority**:
-  - Respects locally installed Ollama tags (e.g. `qwen3.5:9b` if available).
-
-#### 2. Bulletproof Webview DOM & RPC Contract
-The Webview frontend architecture synchronizes UI elements with the extension runtime:
-* **Explicit Element IDs**:
-  - `#btn-mode-chat`: Activates standard Chat Mode.
-  - `#btn-mode-agent`: Activates autonomous Swarm Agent Mode.
-  - `#modelSelect`: Dropdown with `⚡ Auto (Recommended)` as the top option, persisted even after dynamic model refreshes via `modelsList`.
-  - `#chat-mode-label`: Displays active mode state (`💬 Chat Mode` vs `⚡ Agent Mode`).
-  - `#chatInput`: Dual-purpose auto-expanding prompt input.
-* **Two-Way RPC Contract**:
-  - Frontend dispatch:
-    ```javascript
-    vscode.postMessage({
-      type: 'sendMessage',
-      text: userPrompt,
-      model: modelSelect.value, // 'Auto' or specific model
-      mode: currentMode,        // 'chat' or 'agent'
-      autonomousMode: isAutonomous
-    });
-    ```
-  - Backend dispatch (`ChatViewProvider._handleSendMessage`):
-    Resolves `Auto` to the optimal model via `ModelRouter.route()`, notifies the webview with `startStream` displaying `${resolvedModel} (Auto)`, and dispatches execution to either `streamChat` or `SwarmOrchestrator.runTask`.
+### 3. Stream Turn Ownership & Centralized Lifecycle
+- **Turn Ownership**: Tagged each turn with a generation ID (`_currentGenerationId = ++_generationCounter`). Exit paths only mutate state or emit events if their generation ID matches the active generation ID, preventing race conditions from terminating newly started streams.
+- **Centralized Exactly-Once `streamEnd`**: The outer `finally` block dispatches `streamEnd` once per turn across success, error, and cancellation paths.
+- **Slash Command Routing**: Handled `/diff`, `/create-app`, and `/build`. Intercepted reserved commands (`/fix`, `/commit`, `/search`, `/read`) with clear user guidance rather than silently falling through to normal LLM conversation.
 
 ---
 
-## 4. Command & Slash Action Reference
+## 5. Phase 5.5 (H2) High-Severity Hardening
 
-| Command / Control | Mode | Behavior |
-| :--- | :--- | :--- |
-| **`/create-app <idea>`** | Planner | Launches `AppGeneratorService` to scaffold and write a complete .NET API + Angular solution. |
-| **`/build` or `/fix`** | Diagnostic | Executes `dotnet build` or `npm run build`, captures error logs, and prompts the agent to self-heal. |
-| **`/diff`** | Audit | Executes `git diff --stat` & `git status --short` to inspect pending changes. |
-| **`/commit`** | Git | Analyzes git diffs to generate 3 conventional commit message options. |
-| **`/search <term>`** | Search | Performs ripgrep search across workspace files. |
-| **`/read <path>`** | Inspection | Reads the specified file with line numbers directly into context. |
-| **`📌 Selection`** | Quick Action | Injects active editor highlighted text formatted as markdown. |
-| **`📄 Active`** | Quick Action | Injects the complete open editor document. |
-| **`📁 Project`** | Quick Action | Attaches the project directory tree and manifest summaries. |
-| **`▶️ Run in Terminal`** | Code Block | Sends generated shell commands to the `Local Copilot` terminal. |
+All High-severity defects (DEFECT-HIGH-01, DEFECT-HIGH-02, and DEFECT-HIGH-03) have been implemented and verified:
+
+### 1. [DEFECT-HIGH-01] Webview CSP Nonce Enforcement, Zero Inline Handlers & Context-Specific XSS Defense
+- **Strict Nonce Enforcement**: Verified cryptographic 16-byte base64 nonces on `script-src` and complete exclusion of `'unsafe-inline'` and `'unsafe-eval'`.
+- **Zero Inline Event Attributes**: Replaced direct property event assignments (`tab.onclick = ...`) in favor of strict `addEventListener` and delegation. Verified HTML contains strictly zero `on*` inline event attributes.
+- **Context-Specific Template Sanitization**:
+  - HTML text content escaped via `escapeHtml()`.
+  - Dynamic `icon` in `appendTimelineStep` escaped via `escapeHtml(icon)`.
+  - Class name `agentRole` sanitized into strict alphanumeric slugs (`/[^a-z0-9_-]/g`), eliminating DOM attribute escapes and CSS injection.
+- **XSS Corpus Verification**: Verified neutralization of `<script>`, `<img onerror>`, `<svg onload>`, `javascript:`, and quote breakages across dynamic webview sinks.
+
+### 2. [DEFECT-HIGH-02] Swarm Whiteboard Schema v2, Task Identity & Evidence Verification Isolation
+- **Schema v2**: Introduced `SwarmWhiteboard` Schema v2 featuring per-task identity (`taskId`), `currentTask`, `lastTask`, and `projectContext`.
+- **Task-Local State Isolation**: New tasks (`isContinuation: false`) archive previous task to `lastTask` and generate a fresh `taskId`, resetting `modifiedFiles = []`, `executionPlan = ''`, `diagnostics = []`, and `delegationHistory = []`.
+- **Read-Only Task Immunity**: Evidence verification on `finish_task` checks only files modified in the *current* task session. Read-only queries are never trapped by edits from earlier tasks.
+- **Seamless v1 Legacy Migration**: `loadWhiteboardFromDisk()` detects legacy unversioned files and migrates them to Schema v2 without data loss or corruption.
+
+### 3. [DEFECT-HIGH-03] Concurrent Generation Single-Flight Guard & Ownership Cleanup
+- **Single-Flight Lock**: `_handleSendMessage` rejects incoming generation requests immediately if `_isGenerating === true`, posting an actionable `streamError` without corrupting history or aborting in-flight work.
+- **History Preservation**: Rejected messages are never appended to `_chatHistory`.
+- **Generation Ownership of Lock & Cleanup**: `stopGeneration` aborts `_currentAbortController` without prematurely resetting `_isGenerating = false`. Each generation exclusively owns its cleanup in its own `finally` block guarded by `_currentGenerationId === generationId`.
+- **Race Condition Immunity Verified**: Verified with dedicated regression tests that an earlier aborted generation unwinding asynchronously in the background never clobbers a newer generation's state, controllers, or locks.
+- **Unblocked `ask_user` Clarifications**: `agentReply` messages route directly to `_currentAgent.resume()` without passing through the single-flight send guard.
 
 ---
 
-## 5. Security, Privacy & Air-Gap Audit
+## 6. Phase 5.5 (H3) Medium-Severity Hardening (Completed & Verified)
 
-* **100% Offline**: All inference runs locally via `http://127.0.0.1:11434`. Zero external network calls or telemetry exist in the extension code.
-* **Webview Isolation**: All scripts run inside a sandboxed iframe with strict `localResourceRoots` boundaries.
-* **Terminal Transparency**: Commands run in an open, visible integrated terminal named `Local Copilot` rather than hidden background processes.
+All four medium-severity audit defects have been fully implemented, integrated, and verified with 197 passing unit tests:
+
+1. **[DEFECT-MED-01] Shared AtomicFileWriter (`src/services/atomicFileWriter.ts`)**:
+   - Centralized atomic write service using temp files (`.tmp.[pid].[timestamp].[rand]`), incorporating `process.pid` to avoid multi-process collisions.
+   - Mutex queue (`writeQueue`) per target URI guaranteeing sequential in-order file replacements.
+   - Automatic cleanup of stale temporary files older than 60 seconds (`cleanupStaleTempFiles`).
+   - Resilient `readJson` with automatic `.corrupt` file backup upon JSON parse failure, falling back safely without unhandled crashes.
+   - Fully adopted across `MemoryService`, `SwarmOrchestrator`, and `ChatViewProvider`.
+
+2. **[DEFECT-MED-02] Universal <think> Token Suppression (`src/providers/chatViewProvider.ts`)**:
+   - Robust `stripThoughtTokens` utility handling multiline, case-insensitive, and trailing unclosed `<think>` tags (`/(?:<\/think>|$)/gi`).
+   - Clean separation of live thinking in `<details class="think-box">` from persisted message content.
+   - Stripped in both standard chat and agent mode save paths, and sanitized on history restoration from disk.
+
+3. **[DEFECT-MED-03] Host-Side Modal Approval for Terminal Execution (`src/providers/chatViewProvider.ts`)**:
+   - Classifies commands via `CommandClassifier`. Tier 4 commands are prohibited outright.
+   - Requires host modal confirmation (`vscode.window.showWarningMessage` with `{ modal: true }`) for **Tier 2** (`npm test`, `dotnet run`) and **Tier 3** (arbitrary execution) commands before terminal execution.
+   - Blocks terminal execution completely in untrusted workspaces (`vscode.workspace.isTrusted === false`).
+
+4. **[DEFECT-MED-04] Comprehensive Git Environment & Config Isolation (`src/services/gitExecutionIsolator.ts`, `src/services/agentToolService.ts`)**:
+   - Injected config overrides into Git invocations: `-c core.hooksPath=/dev/null`, `-c diff.external=`, `-c merge.tool=`, `-c diff.tool=`.
+   - Injected `GIT_CONFIG_NOSYSTEM=1` environment variable.
+   - Enforced Workspace Trust gating in `AgentToolService.executeCommand`, restricting untrusted workspaces to read-only Tier 1 commands.
+
+---
+
+## 7. Phase 7: Production Integration & Security Remediation
+
+Phase 7 transformed all Phase 5.5 and Phase 6 autonomous capabilities into unified, production-grade functionality:
+
+1. **Path Security & Conflict-Aware Rollbacks (`src/services/pathSecurity.ts`, `src/services/codeGenerationEngine.ts`)**:
+   - Centralized `PathSecurity.validatePath` handling traversal detection, null bytes, UNC path rejection, internal state boundary defense, and symlink/junction canonicalization.
+   - `CodeGenerationEngine` snapshotting pre-flight file bytes and computing SHA-256 hashes to detect concurrent user modifications and perform conflict-aware rollbacks without clobbering external changes.
+
+2. **External Model Protection & Ownership Tracking (`src/services/modelLifecycleManager.ts`)**:
+   - Tracks models explicitly loaded by this extension instance (`_extensionOwnedModels`).
+   - Never unloads models in Ollama's global `/api/ps` table belonging to external processes (Open WebUI, CLI tools, other editors) unless explicitly instructed.
+
+3. **Autonomous Debugging & Real-Time `/fix` Workflow (`src/services/autonomousDebuggerService.ts`, `src/providers/chatViewProvider.ts`)**:
+   - End-to-end slash command `/fix [errorText]`: captures stack trace/diagnostics, localizes culprit file via `PathSecurity`, prompts local LLM for minimal surgical replacement, applies patch transactionally via `CodeGenerationEngine`, and verifies build with automatic rollback if failed.
+
+4. **Safe Multi-File Code Generation Tooling (`src/services/agentToolService.ts`, `src/services/autonomousAgent.ts`)**:
+   - Registered `apply_transactional_patches` tool in `AVAILABLE_TOOLS` and `AutonomousAgent`, executing atomic multi-file creations, modifications, and deletions with automatic rollback.
+
+5. **Autonomous Orchestration Handlers (`src/services/autonomousOrchestrator.ts`)**:
+   - Default production handlers connecting `Architect` -> `Developer` -> `Tester` -> `Reviewer` roles to real Ollama LLM prompting with bounded iterations and review criteria checks.
+
+6. **Regression Intelligence Transitive Tracing & Safety Escalation (`src/services/regressionIntelligenceService.ts`)**:
+   - Graph traversal tracking transitive dependents across workspace files.
+   - Safety escalation: if no tests are found for a modified file or dependency analysis is uncertain, escalates to full test suite (`requiresFullSuite: true`).
+
+7. **Full Slash Command Suite & Source Control Hygiene (`src/providers/chatViewProvider.ts`, `src/services/workspaceManager.ts`)**:
+   - Live `/search` and bounded `/read` with path security.
+   - `/benchmark`: built-in evaluation battery across 4 core competencies.
+   - Reviewable `/commit` displaying changed files, diff stat, and requiring explicit user confirmation before committing.
+   - `WorkspaceManager.ensureStorageHygiene` writing `.vscode/local-copilot/.gitignore` to keep internal whiteboards and diagnostics isolated from source control.
+
+---
+
+## 8. Phase 9 & 10 Advanced Architecture & Services
+
+### Phase 9: Agent Intelligence & Coding Quality
+1. **Standardized 30-Task Benchmark Corpus (`src/services/benchmarkTaskCorpus.ts`)**:
+   - 10 code repair, 8 feature generation, 6 refactor, and 6 tool use tasks specifically designed for local 7B-9B models.
+   - Automated comparison engine tracking pass-rate deltas and per-category improvements.
+2. **Tolerant JSON Parsing & Conversation Compactor (`src/services/tolerantJsonParser.ts`, `src/services/contextCompactionService.ts`)**:
+   - 4-stage tolerant repair: markdown fences, syntax normalization (trailing commas, unquoted keys, single quotes), and stack-based bracket balancing for truncated outputs.
+   - Structured conversation compaction generating `<CONTEXT_SUMMARY>` preserving goals, referenced files, operations, and diagnostics.
+3. **Incremental Low-Token Repository Map (`src/services/repositoryMapService.ts`)**:
+   - Degree-centrality scoring across imported and exported symbols.
+   - Atomic caching to `.vscode/local-copilot/repo-map.json` using content hashes and modification timestamps.
+4. **Dynamic Context Budget Manager (`src/services/contextBudgetManager.ts`)**:
+   - Hard token allocations for 8k context window across system, repo map, plan, code chunks, and reserved output.
+   - Untrusted code snippet XML quarantine (`<untrusted_content>`).
+5. **Structured Plan Schema & Fast-Path Router (`src/services/planSchema.ts`)**:
+   - Fast-path routing bypassing planning for trivial Q&A.
+   - Versioned `PlanSchemaV1` enforcing 10-step cap and backward-only acyclic dependencies.
+6. **Pre-Edit Impact Analysis (`src/services/impactAnalysisService.ts`)**:
+   - Symbol caller computation and test discovery producing coordinated multi-file edit sets.
+7. **Iterative Code Repair with Regression Awareness (`src/services/codeRepairEngine.ts`)**:
+   - Patch hashing and oscillation detection across repair iterations.
+   - Deterministic test-weakening prevention rejecting removal of assertions or insertion of `.skip`/`xit`.
+8. **Independent Reviewer Pipeline (`src/services/independentReviewer.ts`)**:
+   - Deterministic pre-checks (compiler errors, sensitive targets, secret leaks, test weakening) preceding LLM evaluation.
+   - Hallucinated out-of-bounds line comment pruning.
+
+### Phase 10: Advanced Orchestration & Swarm Intelligence
+1. **Hardware Capacity Budget Manager (`src/services/hardwareCapacityManager.ts`)**:
+   - Serialized FIFO LLM inference turn queue guaranteeing single-resident execution on 8 GB cards while allowing concurrent non-LLM background tool execution.
+2. **Whiteboard Coordinator v3 (`src/services/whiteboardCoordinator.ts`)**:
+   - Subtask lifecycle management, atomic state checkpoints, state rollback, and `.vscode/local-copilot/whiteboard-v3.json` persistence.
+3. **Sub-Agent Task Pool (`src/services/subagentTaskPool.ts`)**:
+   - Prioritized asynchronous task pool with max concurrency cap (default 2) and abort signal propagation.
+4. **File-Level Lease Manager (`src/services/fileLeaseManager.ts`)**:
+   - Shared read leases, exclusive write leases, 30s TTL expiry, and canonical alphabetical sorting for deadlock-free multi-file locking.
+5. **Typed Agent Contracts (`src/services/typedAgentContracts.ts`)**:
+   - Strongly typed I/O schemas for Architect, Developer, Tester, Reviewer, and SecurityAuditor roles.
+6. **Sub-Agent Delegation Protocol (`src/services/subagentDelegationProtocol.ts`)**:
+   - Delegation protocol with 25s timeouts, corrective prompt retries, and delegation audit history.
+7. **Consensus Verification Engine (`src/services/consensusVerifier.ts`)**:
+   - Multi-agent consensus requirement combining deterministic gates, Tester verification, Reviewer quality review, and Security Auditor approval.
+8. **Adversarial Prompt Defense (`src/services/adversarialPromptDefense.ts`)**:
+   - Untrusted data feed quarantine neutralizing instruction overrides, role-spoofing tags (`<system>`), and secret exfiltration.
+9. **Multi-Strategy Code Fallbacks (`src/services/multiStrategyCodeGenerator.ts`)**:
+   - 3-tier fallback code patching (exact `str_replace` -> normalized whitespace/CRLF -> anchor-based block replacement).
+
+---
+
+## 9. Known Limitations
+
+1. **Subprocess Shell Builtins**: Because all process execution uses `child_process.spawn(..., { shell: false })`, shell built-ins such as `cd`, `dir`, `export`, and shell redirection operators (`>`, `|`) cannot be run directly via `execute_command`. Commands must invoke real host binaries with arguments passed as arrays.
+2. **Custom / Portable Node.js Setups**: If a host on Windows has `node.exe` installed in a non-standard portable path without standard npm directory structure, `ExecutableResolver` fails closed and instructs the developer on setting standard Node.js PATH locations.
+3. **Single-Resident 8GB VRAM Constraint**: While Ollama can run concurrently on high-end hardware, this extension strictly enforces sequential single-model residency (`ModelLifecycleManager` and `HardwareCapacityManager`) to guarantee zero out-of-memory crashes on 8 GB VRAM systems.
+
+---
+
+## 10. Verification & Test Metrics
+
+- **Total Unit Tests**: 361 passing across 41 test suites (0 failures, 0 pending, 5.0s)
+- **Real Integration Tier**: 23 passing, 3 pending (offline mode), 26 passing (online mode)
+- **Compilation**: `tsc -p ./` (0 errors), `tsc -p ./tsconfig.test.json` (0 errors)
+- **Prepublish Build**: `npm run vscode:prepublish` (0 errors)
+- **Git Hygiene**: `git diff --check` (0 errors), zero commits created.

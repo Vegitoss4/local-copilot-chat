@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { OllamaService } from './ollamaService';
+import { AtomicFileWriter } from './atomicFileWriter';
 
 export interface MemoryMetadata {
   filePath?: string;
@@ -31,6 +33,7 @@ export class MemoryService {
   private isLoaded: boolean = false;
   private memoryDirUri: vscode.Uri | null = null;
   private memoryFileUri: vscode.Uri | null = null;
+  private _savePromise: Promise<void> = Promise.resolve();
 
   constructor(ollamaService: OllamaService) {
     this.ollamaService = ollamaService;
@@ -46,8 +49,8 @@ export class MemoryService {
   /**
    * Initializes workspace paths and loads existing vector memory from .vscode/local-copilot/memory.json
    */
-  public async init(): Promise<void> {
-    if (this.isLoaded) return;
+  public async init(targetRootUri?: vscode.Uri): Promise<void> {
+    if (this.isLoaded && !targetRootUri) return;
 
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
@@ -55,7 +58,7 @@ export class MemoryService {
       return;
     }
 
-    const rootUri = folders[0].uri;
+    const rootUri = targetRootUri || folders[0].uri;
     this.memoryDirUri = vscode.Uri.joinPath(rootUri, '.vscode', 'local-copilot');
     this.memoryFileUri = vscode.Uri.joinPath(this.memoryDirUri, 'memory.json');
 
@@ -133,10 +136,57 @@ export class MemoryService {
   }
 
   /**
+   * Deterministically validates whether a file should be indexed into vector memory.
+   * Excludes secret keys, credentials, build output, dependencies, and binary assets.
+   */
+  public static isIndexableFile(filePath: string): boolean {
+    if (!filePath || !filePath.trim()) return false;
+    const norm = filePath.replace(/\\/g, '/');
+
+    // 1. Exclude sensitive and secret files
+    if (/(^|\/)\.env(\.[^/]+)?$/i.test(norm)) return false;
+    if (/\.(env|pem|key|pfx|pkcs12|crt|cer|kdbx)$/i.test(norm)) return false;
+    if (/(^|\/)(id_rsa|id_ed25519|credentials\.json|secrets?\.json)(\.[^/]+)?$/i.test(norm)) return false;
+
+    // 2. Exclude build artifacts, dependencies, and VCS directories
+    if (/(^|\/)(node_modules|\.git|\.vscode|dist|out|out-test|bin|obj|\.idea|\.vs|coverage|vendor)(\/|$)/i.test(norm)) return false;
+
+    // 3. Exclude binary assets
+    if (/\.(png|jpg|jpeg|gif|ico|webp|svg|pdf|zip|tar|gz|7z|exe|dll|so|dylib|bin|lock|iso)$/i.test(norm)) return false;
+
+    return true;
+  }
+
+  /**
+   * Removes stale chunks for a deleted or modified file
+   */
+  public async removeFileChunks(filePath: string): Promise<number> {
+    await this.init();
+    const prevCount = this.chunks.length;
+    this.chunks = this.chunks.filter(c => c.metadata.filePath !== filePath);
+    const removed = prevCount - this.chunks.length;
+    if (removed > 0) {
+      await this.saveToDisk();
+    }
+    return removed;
+  }
+
+  /**
    * Chunks and indexes a file into the vector memory
    */
   public async indexFile(filePath: string, content: string, agentOrigin: string = 'planner'): Promise<number> {
-    await this.init();
+    let targetRoot: vscode.Uri | undefined;
+    if (filePath && path.isAbsolute(filePath)) {
+      const match = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+      if (match) {
+        targetRoot = match.uri;
+      }
+    }
+    await this.init(targetRoot);
+
+    if (!MemoryService.isIndexableFile(filePath)) {
+      return 0;
+    }
 
     // Remove existing chunks for this file to prevent duplicates
     this.chunks = this.chunks.filter(c => c.metadata.filePath !== filePath);
@@ -166,14 +216,15 @@ export class MemoryService {
   }
 
   /**
-   * Performs cosine similarity semantic search across memory chunks
+   * Performs cosine similarity semantic search across memory chunks with deduplication
    */
   public async semanticSearch(
     query: string,
     limit: number = 3,
-    category?: string
+    category?: string,
+    filterRootUri?: vscode.Uri
   ): Promise<SearchResult[]> {
-    await this.init();
+    await this.init(filterRootUri);
 
     if (this.chunks.length === 0) {
       return [];
@@ -187,12 +238,32 @@ export class MemoryService {
         continue;
       }
 
+      if (filterRootUri && chunk.metadata.filePath) {
+        const rootPath = path.normalize(filterRootUri.fsPath).toLowerCase();
+        const chunkPath = path.normalize(chunk.metadata.filePath).toLowerCase();
+        if (path.isAbsolute(chunkPath) && !chunkPath.startsWith(rootPath)) {
+          continue;
+        }
+      }
+
       const similarity = this.calculateCosineSimilarity(queryEmbedding, chunk.embedding);
       results.push({ chunk, similarity });
     }
 
     results.sort((a, b) => b.similarity - a.similarity);
-    return results.slice(0, Math.max(1, limit));
+
+    // Deduplicate identical chunks or same-file matches
+    const seen = new Set<string>();
+    const deduplicated: SearchResult[] = [];
+    for (const r of results) {
+      const key = r.chunk.metadata.filePath ? `${r.chunk.metadata.filePath}:${r.chunk.text.slice(0, 50)}` : r.chunk.id;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(r);
+      }
+    }
+
+    return deduplicated.slice(0, Math.max(1, limit));
   }
 
   public getMemoryCount(): number {
@@ -205,36 +276,22 @@ export class MemoryService {
   }
 
   /**
-   * Saves memory chunks to .vscode/local-copilot/memory.json
+   * Saves memory chunks to .vscode/local-copilot/memory.json with genuine atomic tmp replacement
    */
   public async saveToDisk(): Promise<void> {
     if (!this.memoryFileUri || !this.memoryDirUri) return;
-
-    try {
-      await vscode.workspace.fs.createDirectory(this.memoryDirUri);
-      const json = JSON.stringify(this.chunks, null, 2);
-      const buffer = new TextEncoder().encode(json);
-      await vscode.workspace.fs.writeFile(this.memoryFileUri, buffer);
-    } catch (err) {
-      console.warn('Failed to save memory.json:', err);
-    }
+    await AtomicFileWriter.writeJson(this.memoryFileUri, this.chunks);
   }
 
   /**
-   * Loads memory chunks from .vscode/local-copilot/memory.json
+   * Loads memory chunks from .vscode/local-copilot/memory.json with corruption recovery
    */
   public async loadFromDisk(): Promise<void> {
     if (!this.memoryFileUri) return;
-
-    try {
-      const data = await vscode.workspace.fs.readFile(this.memoryFileUri);
-      const text = new TextDecoder('utf-8').decode(data);
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed)) {
-        this.chunks = parsed;
-      }
-    } catch {
-      // File doesn't exist yet, start with empty array
+    const parsed = await AtomicFileWriter.readJson<MemoryChunk[]>(this.memoryFileUri, []);
+    if (Array.isArray(parsed)) {
+      this.chunks = parsed;
+    } else {
       this.chunks = [];
     }
   }

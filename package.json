@@ -4,6 +4,7 @@
   "description": "Copilot Chat with seamless switching between local AI models like Qwen and DeepSeek",
   "version": "0.1.0",
   "publisher": "local-developer",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -74,6 +75,70 @@
           "type": "string",
           "default": "qwen2.5-coder:7b",
           "description": "Default local model to use on startup"
+        },
+        "localCopilot.numCtx": {
+          "type": "integer",
+          "default": 16384,
+          "minimum": 2048,
+          "maximum": 65536,
+          "description": "Context window size in tokens allocated to Ollama (num_ctx)"
+        },
+        "localCopilot.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Sampling temperature for conversational responses (tool calling enforces a deterministic 0.1 ceiling)"
+        },
+        "localCopilot.maxTurns": {
+          "type": "integer",
+          "default": 25,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum tool execution turns permitted for agent tasks"
+        },
+        "localCopilot.connectTimeout": {
+          "type": "integer",
+          "default": 5000,
+          "minimum": 1000,
+          "maximum": 30000,
+          "description": "Connection establishment timeout to Ollama in milliseconds"
+        },
+        "localCopilot.idleStreamTimeout": {
+          "type": "integer",
+          "default": 30000,
+          "minimum": 5000,
+          "maximum": 120000,
+          "description": "Stream inactivity timeout in milliseconds before a stalled generation is stopped"
+        },
+        "localCopilot.totalGenerationTimeout": {
+          "type": "integer",
+          "default": 300000,
+          "minimum": 30000,
+          "maximum": 900000,
+          "description": "Total generation turn timeout in milliseconds"
+        },
+        "localCopilot.modelUnloadPolicy": {
+          "type": "string",
+          "enum": [
+            "keepAlive",
+            "unloadImmediately",
+            "unloadOnIdle"
+          ],
+          "default": "keepAlive",
+          "description": "VRAM management policy: 'keepAlive' (default 5m), 'unloadImmediately' (freed right after turn), or 'unloadOnIdle' (timer-based)"
+        },
+        "localCopilot.modelKeepAliveDuration": {
+          "type": "string",
+          "default": "5m",
+          "description": "Duration to keep model in VRAM when using keepAlive policy (e.g. '5m', '10m', '0')"
+        },
+        "localCopilot.idleUnloadTimeout": {
+          "type": "integer",
+          "default": 180000,
+          "minimum": 30000,
+          "maximum": 600000,
+          "description": "Idle duration in milliseconds before unloading model when unloadOnIdle policy is active"
         }
       }
     }
@@ -84,6 +149,7 @@
     "watch": "tsc -watch -p ./",
     "compile:test": "tsc -p ./tsconfig.test.json",
     "test:unit": "npm run compile:test && mocha --require out-test/test/setup.js \"out-test/test/unit/**/*.test.js\"",
+    "test:real": "npm run compile:test && mocha --require out-test/test/setup.js \"out-test/test/real-integration/**/*.test.js\"",
     "test:integration": "npm run compile && npm run compile:test && node out-test/test/integration/runTest.js",
     "test": "npm run test:unit"
   },
@@ -93,6 +159,7 @@
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.5.2",
+    "fast-check": "^4.10.2",
     "mocha": "^10.8.2",
     "mock-require": "^3.0.3",
     "typescript": "^5.3.3"

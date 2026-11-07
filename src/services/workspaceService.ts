@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { WorkspaceManager } from './workspaceManager';
+import { RepositoryIntelligenceService } from './repositoryIntelligenceService';
 
 export interface WorkspaceSummary {
   projectName: string;
@@ -53,7 +55,7 @@ export class WorkspaceContextService {
     };
   }
 
-  public static async getWorkspaceSummary(): Promise<string> {
+  public static async getWorkspaceSummary(targetFolder?: vscode.WorkspaceFolder): Promise<string> {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
       const activeFile = await this.getActiveFileContext();
@@ -63,7 +65,7 @@ export class WorkspaceContextService {
       return 'No workspace folder currently open.';
     }
 
-    const rootFolder = folders[0];
+    const rootFolder = targetFolder || WorkspaceManager.getTargetWorkspaceFolder() || folders[0];
     const projectName = rootFolder.name;
     const rootUri = rootFolder.uri;
 
@@ -101,6 +103,12 @@ export class WorkspaceContextService {
 
     if (activeFile) {
       summary += `Currently Active Editor File: ${activeFile.path}\n\`\`\`\n${activeFile.content}\n\`\`\`\n`;
+    }
+
+    // Repository Intelligence Integration
+    const repoIntelOverview = RepositoryIntelligenceService.getInstance().getRepositoryOverview(800);
+    if (repoIntelOverview) {
+      summary += `${repoIntelOverview}\n\n`;
     }
 
     summary += `=== END WORKSPACE CONTEXT ===\n`;

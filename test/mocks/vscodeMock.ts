@@ -35,6 +35,47 @@ export enum MockDiagnosticSeverity {
   Hint = 3
 }
 
+export class MockCancellationToken {
+  private _isCancelled = false;
+  get isCancellationRequested(): boolean {
+    return this._isCancelled;
+  }
+  public cancel() {
+    this._isCancelled = true;
+  }
+}
+
+export class MockCancellationTokenSource {
+  public token = new MockCancellationToken();
+  public cancel() {
+    this.token.cancel();
+  }
+  public dispose() {}
+}
+
+export class MockEventEmitter<T = any> {
+  private listeners: Array<(e: T) => any> = [];
+  public readonly event = (listener: (e: T) => any) => {
+    this.listeners.push(listener);
+    return {
+      dispose: () => {
+        const idx = this.listeners.indexOf(listener);
+        if (idx !== -1) this.listeners.splice(idx, 1);
+      }
+    };
+  };
+
+  public fire(data: T): void {
+    for (const listener of [...this.listeners]) {
+      listener(data);
+    }
+  }
+
+  public dispose(): void {
+    this.listeners = [];
+  }
+}
+
 export class MockUri {
   public scheme: string = 'file';
   public authority: string = '';
@@ -156,6 +197,20 @@ class MockFileSystem {
     return results;
   }
 
+  async rename(source: MockUri, target: MockUri, options?: { overwrite?: boolean }): Promise<void> {
+    const srcNorm = path.normalize(source.fsPath);
+    const targetNorm = path.normalize(target.fsPath);
+    const data = this.files.get(srcNorm);
+    if (!data) {
+      throw new Error(`Source file not found for rename: ${source.fsPath}`);
+    }
+    if (this.files.has(targetNorm) && !options?.overwrite) {
+      throw new Error(`Target file already exists: ${target.fsPath}`);
+    }
+    this.files.set(targetNorm, data);
+    this.files.delete(srcNorm);
+  }
+
   async delete(uri: MockUri): Promise<void> {
     const norm = path.normalize(uri.fsPath);
     this.files.delete(norm);
@@ -175,13 +230,19 @@ export interface WorkspaceMockState {
   workspaceFolders?: MockWorkspaceFolder[];
   documents: Map<string, MockDocument>;
   diagnostics: Map<string, any[]>;
+  configuration: Map<string, any>;
+  configChangeListeners: Array<(e: { affectsConfiguration: (section: string) => boolean }) => void>;
 }
 
 export const mockState: WorkspaceMockState = {
   workspaceRoot: path.normalize('C:/Projects/test-workspace'),
   documents: new Map(),
-  diagnostics: new Map()
+  diagnostics: new Map(),
+  configuration: new Map(),
+  configChangeListeners: []
 };
+
+export let mockClipboardText: string = '';
 
 export function resetMockState(workspaceRoot: string = 'C:/Projects/test-workspace') {
   mockState.workspaceRoot = path.normalize(workspaceRoot);
@@ -189,6 +250,23 @@ export function resetMockState(workspaceRoot: string = 'C:/Projects/test-workspa
   mockState.documents.clear();
   mockState.diagnostics.clear();
   mockFs.clear();
+  mockClipboardText = '';
+  mockState.configuration.clear();
+  mockState.configChangeListeners = [];
+}
+
+export function updateMockConfiguration(key: string, value: any) {
+  mockState.configuration.set(key, value);
+  const event = {
+    affectsConfiguration: (section: string) => {
+      return key === section || key.startsWith(section + '.') || section.startsWith(key + '.');
+    }
+  };
+  for (const listener of [...mockState.configChangeListeners]) {
+    try {
+      listener(event);
+    } catch {}
+  }
 }
 
 export function setMockWorkspaceFolders(folders: Array<{ name: string; uri: MockUri; index?: number }>) {
@@ -205,11 +283,32 @@ export const vscodeMock = {
   Range: MockRange,
   WorkspaceEdit: MockWorkspaceEdit,
   DiagnosticSeverity: MockDiagnosticSeverity,
+  EventEmitter: MockEventEmitter,
+  CancellationTokenSource: MockCancellationTokenSource,
+  Disposable: {
+    from: (...disposables: { dispose: () => any }[]) => ({
+      dispose: () => disposables.forEach((d) => d && d.dispose && d.dispose()),
+    }),
+  },
   FileType: {
     Unknown: 0,
     File: 1,
     Directory: 2,
     SymbolicLink: 64
+  },
+  StatusBarAlignment: {
+    Left: 1,
+    Right: 2
+  },
+  ThemeColor: class ThemeColor {
+    constructor(public id: string) {}
+  },
+  MarkdownString: class MarkdownString {
+    constructor(public value: string = '') {}
+    appendMarkdown(text: string) {
+      this.value += text;
+      return this;
+    }
   },
   workspace: {
     get workspaceFolders() {
@@ -225,6 +324,26 @@ export const vscodeMock = {
     asRelativePath(pathOrUri: any): string {
       const p = typeof pathOrUri === 'string' ? pathOrUri : pathOrUri.fsPath;
       return path.relative(mockState.workspaceRoot, p).replace(/\\/g, '/');
+    },
+    getWorkspaceFolder(uri: any) {
+      const folders = mockState.workspaceFolders || [{
+        uri: MockUri.file(mockState.workspaceRoot),
+        name: path.basename(mockState.workspaceRoot),
+        index: 0
+      }];
+      if (!uri) return undefined;
+      const rawPath = typeof uri === 'string' ? uri : (uri.fsPath || uri.path || '');
+      const targetPath = path.normalize(rawPath).toLowerCase();
+      let bestMatch: any = undefined;
+      for (const folder of folders) {
+        const folderPath = path.normalize(folder.uri.fsPath).toLowerCase();
+        if (targetPath.startsWith(folderPath)) {
+          if (!bestMatch || folderPath.length > path.normalize(bestMatch.uri.fsPath).length) {
+            bestMatch = folder;
+          }
+        }
+      }
+      return bestMatch;
     },
     fs: mockFs,
     async openTextDocument(uri: MockUri): Promise<MockDocument> {
@@ -313,7 +432,23 @@ export const vscodeMock = {
     getConfiguration(section?: string) {
       return {
         get(key: string, defaultValue?: any) {
+          const fullKey = section ? `${section}.${key}` : key;
+          if (mockState.configuration.has(fullKey)) {
+            return mockState.configuration.get(fullKey);
+          }
+          if (mockState.configuration.has(key)) {
+            return mockState.configuration.get(key);
+          }
           return defaultValue;
+        }
+      };
+    },
+    onDidChangeConfiguration(listener: (e: any) => void) {
+      mockState.configChangeListeners.push(listener);
+      return {
+        dispose: () => {
+          const idx = mockState.configChangeListeners.indexOf(listener);
+          if (idx !== -1) mockState.configChangeListeners.splice(idx, 1);
         }
       };
     }
@@ -353,13 +488,32 @@ export const vscodeMock = {
       show: () => {},
       sendText: () => {},
       dispose: () => {}
-    })
+    }),
+    createStatusBarItem: (alignment?: any, priority?: number) => ({
+      alignment,
+      priority,
+      text: '',
+      tooltip: '',
+      command: '',
+      color: undefined,
+      backgroundColor: undefined,
+      show: () => {},
+      hide: () => {},
+      dispose: () => {}
+    }),
+    showQuickPick: async (items: any[]) => items[0]
   },
   commands: {
     executeCommand: async () => undefined,
     registerCommand: (cmd: string, handler: Function) => ({ dispose: () => {} })
   },
   env: {
-    appRoot: 'C:/VSCode'
+    appRoot: 'C:/VSCode',
+    clipboard: {
+      readText: async () => mockClipboardText,
+      writeText: async (text: string) => {
+        mockClipboardText = text;
+      }
+    }
   }
 };

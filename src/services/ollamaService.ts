@@ -20,6 +20,70 @@ export interface OllamaChatResponse {
   eval_count?: number;
 }
 
+export interface OllamaChatMetadata {
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+  eval_count?: number;
+  eval_duration?: number;
+  total_duration?: number;
+  load_duration?: number;
+}
+
+export interface IOllamaModelInfo {
+  name: string;
+  model: string;
+  size: number;
+  sizeVram?: number;
+  expiresAt?: string;
+}
+
+export interface OllamaTimeoutOptions {
+  connectTimeoutMs?: number;
+  headersTimeoutMs?: number;
+  idleStreamTimeoutMs?: number;
+  totalTimeoutMs?: number;
+}
+
+export class OllamaTimeoutError extends Error {
+  constructor(
+    public readonly phase: 'connect' | 'headers' | 'idle_stream' | 'total',
+    public readonly timeoutMs: number,
+    message?: string
+  ) {
+    super(message || `Ollama request timed out during ${phase} phase after ${timeoutMs}ms.`);
+    this.name = 'OllamaTimeoutError';
+  }
+}
+
+export class OllamaVramError extends Error {
+  constructor(
+    public readonly model: string,
+    public readonly rawError: string
+  ) {
+    super(
+      `Ollama failed to allocate VRAM/memory for model "${model}": ${rawError}. ` +
+      `Under the 8 GB VRAM budget constraint, consider reducing the context size ("num_ctx"), ` +
+      `switching to a smaller or more aggressively quantized model (e.g. 7b q4_k_m or 3b), or closing external GPU applications.`
+    );
+    this.name = 'OllamaVramError';
+  }
+}
+
+export function isVramAllocationError(errorMessage: string): boolean {
+  if (!errorMessage || typeof errorMessage !== 'string') return false;
+  const msg = errorMessage.toLowerCase();
+  return (
+    msg.includes('requires more system memory') ||
+    msg.includes('out of memory') ||
+    msg.includes('cuda error') ||
+    msg.includes('not enough memory') ||
+    msg.includes('cudaerrormemoryallocation') ||
+    msg.includes('failed to allocate') ||
+    msg.includes('insufficient memory') ||
+    msg.includes('vram')
+  );
+}
+
 export class OllamaService {
   private endpoint: string;
 
@@ -35,15 +99,33 @@ export class OllamaService {
     return this.endpoint;
   }
 
-  public async getAvailableModels(): Promise<string[]> {
+  public async ping(timeoutMs: number = 2000): Promise<boolean> {
+    try {
+      await this.getAvailableModels({ connectTimeoutMs: timeoutMs });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public async getAvailableModels(timeouts?: OllamaTimeoutOptions): Promise<string[]> {
+    const connectTimeoutMs = timeouts?.connectTimeoutMs ?? 5000;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, connectTimeoutMs);
+
     try {
       const response = await fetch(`${this.endpoint}/api/tags`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
       });
 
       if (!response.ok) {
-        throw new Error(`Ollama returned status ${response.status}`);
+        throw new Error(`Ollama returned HTTP ${response.status} (${response.statusText}) at ${this.endpoint}`);
       }
 
       const data = (await response.json()) as { models?: Array<{ name: string }> };
@@ -53,86 +135,307 @@ export class OllamaService {
 
       return data.models.map((m) => m.name);
     } catch (err: any) {
-      console.error('Failed to query Ollama models:', err);
+      if (timedOut) {
+        throw new OllamaTimeoutError(
+          'connect',
+          connectTimeoutMs,
+          `Connection to Ollama at ${this.endpoint} timed out after ${connectTimeoutMs}ms.`
+        );
+      }
+      if (err.message && (err.message.includes('HTTP') || err.message.includes('Ollama returned'))) {
+        throw err;
+      }
       throw new Error(
-        `Unable to connect to Ollama at ${this.endpoint}. Please make sure Ollama is running.`
+        `Unable to connect to Ollama at ${this.endpoint}. Please make sure Ollama is running and accessible.`
       );
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   /**
-   * Plain text / markdown streaming chat with AbortController support
+   * Retrieves currently loaded resident models directly from Ollama via GET /api/ps.
+   * Ground-truth observability without false VRAM assumptions.
+   */
+  public async getLoadedModels(timeouts?: OllamaTimeoutOptions): Promise<IOllamaModelInfo[]> {
+    const connectTimeoutMs = timeouts?.connectTimeoutMs ?? 5000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), connectTimeoutMs);
+
+    try {
+      const response = await fetch(`${this.endpoint}/api/ps`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const data = (await response.json()) as { models?: any[] };
+      if (!data.models || !Array.isArray(data.models)) {
+        return [];
+      }
+
+      return data.models.map((m: any) => ({
+        name: m.name || m.model || '',
+        model: m.model || m.name || '',
+        size: typeof m.size === 'number' ? m.size : 0,
+        sizeVram: typeof m.size_vram === 'number' ? m.size_vram : undefined,
+        expiresAt: m.expires_at || undefined,
+      }));
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Plain text / markdown streaming chat with AbortController and multi-tier timeout support
    */
   public async streamChat(
     model: string,
     messages: ChatMessage[],
     onChunk: (chunk: string) => void,
     signal?: AbortSignal,
-    options: Record<string, any> = { num_ctx: 16384, temperature: 0.2 }
+    options: Record<string, any> = { num_ctx: 16384, temperature: 0.2 },
+    timeouts?: OllamaTimeoutOptions,
+    onMetadata?: (meta: OllamaChatMetadata) => void
   ): Promise<string> {
-    const response = await fetch(`${this.endpoint}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const connectTimeoutMs = timeouts?.connectTimeoutMs;
+    const headersTimeoutMs = timeouts?.headersTimeoutMs ?? 45000;
+    const idleStreamTimeoutMs = timeouts?.idleStreamTimeoutMs ?? 30000;
+    const totalTimeoutMs = timeouts?.totalTimeoutMs ?? 300000;
+
+    let timedOutPhase: 'connect' | 'headers' | 'idle_stream' | 'total' | null = null;
+    const internalController = new AbortController();
+
+    const onParentAbort = () => {
+      internalController.abort();
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        throw new Error('Operation was aborted before request was sent.');
+      }
+      signal.addEventListener('abort', onParentAbort, { once: true });
+    }
+
+    let connectTimer: NodeJS.Timeout | undefined;
+    let headersTimer: NodeJS.Timeout | undefined;
+    let idleTimer: NodeJS.Timeout | undefined;
+    let totalTimer: NodeJS.Timeout | undefined;
+
+    if (totalTimeoutMs > 0 && totalTimeoutMs < Infinity) {
+      totalTimer = setTimeout(() => {
+        timedOutPhase = 'total';
+        internalController.abort();
+      }, totalTimeoutMs);
+    }
+
+    if (headersTimeoutMs > 0 && headersTimeoutMs < Infinity) {
+      headersTimer = setTimeout(() => {
+        timedOutPhase = 'headers';
+        internalController.abort();
+      }, headersTimeoutMs);
+    }
+
+    if (connectTimeoutMs && connectTimeoutMs > 0 && connectTimeoutMs < Infinity) {
+      connectTimer = setTimeout(() => {
+        timedOutPhase = 'connect';
+        internalController.abort();
+      }, connectTimeoutMs);
+    }
+
+    try {
+      const payload: Record<string, any> = {
         model,
         messages: this.cleanMessagesForOllama(messages),
         stream: true,
         options,
-      }),
-      signal,
-    });
+      };
+      if (options.keep_alive !== undefined) {
+        payload.keep_alive = options.keep_alive;
+      }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Ollama error (${response.status}): ${errorText || response.statusText}`);
-    }
+      const response = await fetch(`${this.endpoint}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: internalController.signal,
+      });
 
-    if (!response.body) {
-      throw new Error('Readable stream not supported on Ollama response.');
-    }
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = undefined;
+      }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let fullResponse = '';
-    let buffer = '';
+      if (headersTimer) {
+        clearTimeout(headersTimer);
+        headersTimer = undefined;
+      }
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      if (!response.ok) {
+        const errorText = await response.text();
+        if (isVramAllocationError(errorText)) {
+          throw new OllamaVramError(model, errorText);
+        }
+        throw new Error(`Ollama error (${response.status}): ${errorText || response.statusText}`);
+      }
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+      if (!response.body) {
+        throw new Error('Readable stream not supported on Ollama response.');
+      }
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let fullResponse = '';
+      let buffer = '';
+
+      const onAbortCancelReader = () => {
         try {
-          const parsed = JSON.parse(trimmed);
+          reader.cancel().catch(() => {});
+        } catch {}
+      };
+      internalController.signal.addEventListener('abort', onAbortCancelReader, { once: true });
+
+      const resetIdleTimer = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (idleStreamTimeoutMs > 0 && idleStreamTimeoutMs < Infinity) {
+          idleTimer = setTimeout(() => {
+            timedOutPhase = 'idle_stream';
+            internalController.abort();
+          }, idleStreamTimeoutMs);
+        }
+      };
+
+      resetIdleTimer();
+
+      try {
+        while (true) {
+          if (internalController.signal.aborted) {
+            break;
+          }
+          const { done, value } = await reader.read();
+          if (done || internalController.signal.aborted) break;
+
+          resetIdleTimer();
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.message?.content) {
+                const content = parsed.message.content;
+                fullResponse += content;
+                onChunk(content);
+              }
+              if (parsed.done && onMetadata) {
+                onMetadata({
+                  prompt_eval_count: parsed.prompt_eval_count,
+                  prompt_eval_duration: parsed.prompt_eval_duration,
+                  eval_count: parsed.eval_count,
+                  eval_duration: parsed.eval_duration,
+                  total_duration: parsed.total_duration,
+                  load_duration: parsed.load_duration
+                });
+              }
+            } catch {
+              // Incomplete chunk
+            }
+          }
+        }
+      } finally {
+        internalController.signal.removeEventListener('abort', onAbortCancelReader);
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = undefined;
+        }
+      }
+
+      if (internalController.signal.aborted) {
+        const abortErr = new Error('Aborted');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
+
+      if (buffer.trim()) {
+        try {
+          const parsed = JSON.parse(buffer.trim());
           if (parsed.message?.content) {
-            const content = parsed.message.content;
-            fullResponse += content;
-            onChunk(content);
+            fullResponse += parsed.message.content;
+            onChunk(parsed.message.content);
+          }
+          if (parsed.done && onMetadata) {
+            onMetadata({
+              prompt_eval_count: parsed.prompt_eval_count,
+              prompt_eval_duration: parsed.prompt_eval_duration,
+              eval_count: parsed.eval_count,
+              eval_duration: parsed.eval_duration,
+              total_duration: parsed.total_duration,
+              load_duration: parsed.load_duration
+            });
           }
         } catch {
-          // Incomplete chunk
+          // ignore
         }
       }
-    }
 
-    if (buffer.trim()) {
-      try {
-        const parsed = JSON.parse(buffer.trim());
-        if (parsed.message?.content) {
-          fullResponse += parsed.message.content;
-          onChunk(parsed.message.content);
+      return fullResponse;
+    } catch (err: any) {
+      if (internalController.signal.aborted) {
+        if (signal?.aborted) {
+          const abortErr = new Error('Generation was aborted by user.');
+          abortErr.name = 'AbortError';
+          throw abortErr;
         }
-      } catch {
-        // ignore
+        if (timedOutPhase === 'idle_stream') {
+          throw new OllamaTimeoutError(
+            'idle_stream',
+            idleStreamTimeoutMs,
+            `Ollama stream stalled after ${idleStreamTimeoutMs}ms of inactivity.`
+          );
+        }
+        if (timedOutPhase === 'headers') {
+          throw new OllamaTimeoutError(
+            'headers',
+            headersTimeoutMs,
+            `Ollama response headers/model load timed out after ${headersTimeoutMs}ms.`
+          );
+        }
+        if (timedOutPhase === 'total') {
+          throw new OllamaTimeoutError(
+            'total',
+            totalTimeoutMs,
+            `Ollama generation exceeded total turn timeout of ${totalTimeoutMs}ms.`
+          );
+        }
+        if (timedOutPhase === 'connect') {
+          const actualTimeout = connectTimeoutMs || 5000;
+          throw new OllamaTimeoutError(
+            'connect',
+            actualTimeout,
+            `Connection to Ollama timed out after ${actualTimeout}ms.`
+          );
+        }
       }
+      throw err;
+    } finally {
+      if (signal) {
+        signal.removeEventListener('abort', onParentAbort);
+      }
+      if (connectTimer) clearTimeout(connectTimer);
+      if (headersTimer) clearTimeout(headersTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+      if (totalTimer) clearTimeout(totalTimer);
     }
-
-    return fullResponse;
   }
 
   /**
@@ -143,43 +446,127 @@ export class OllamaService {
     messages: ChatMessage[],
     tools: ToolDefinition[],
     signal?: AbortSignal,
-    options: Record<string, any> = { num_ctx: 16384, temperature: 0.1 }
+    options: Record<string, any> = { num_ctx: 16384, temperature: 0.1 },
+    timeouts?: OllamaTimeoutOptions
   ): Promise<ChatMessage> {
-    const payload = {
-      model,
-      messages: this.cleanMessagesForOllama(messages),
-      tools: tools.length > 0 ? tools : undefined,
-      stream: false,
-      options,
+    const headersTimeoutMs = timeouts?.headersTimeoutMs ?? 45000;
+    const totalTimeoutMs = timeouts?.totalTimeoutMs ?? 120000;
+
+    let timedOutPhase: 'headers' | 'total' | null = null;
+    const internalController = new AbortController();
+
+    const onParentAbort = () => {
+      internalController.abort();
     };
 
-    const response = await fetch(`${this.endpoint}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Ollama Tool Call Error (${response.status}): ${errorText || response.statusText}`);
+    if (signal) {
+      if (signal.aborted) {
+        throw new Error('Operation was aborted before request was sent.');
+      }
+      signal.addEventListener('abort', onParentAbort, { once: true });
     }
 
-    const data = (await response.json()) as OllamaChatResponse;
-    const msg = data.message;
+    let headersTimer: NodeJS.Timeout | undefined;
+    let totalTimer: NodeJS.Timeout | undefined;
 
-    // Check for native Ollama tool_calls
-    if (msg.tool_calls && msg.tool_calls.length > 0) {
+    if (totalTimeoutMs > 0 && totalTimeoutMs < Infinity) {
+      totalTimer = setTimeout(() => {
+        timedOutPhase = 'total';
+        internalController.abort();
+      }, totalTimeoutMs);
+    }
+
+    if (headersTimeoutMs > 0 && headersTimeoutMs < Infinity) {
+      headersTimer = setTimeout(() => {
+        timedOutPhase = 'headers';
+        internalController.abort();
+      }, headersTimeoutMs);
+    }
+
+    try {
+      const payload: Record<string, any> = {
+        model,
+        messages: this.cleanMessagesForOllama(messages),
+        tools: tools.length > 0 ? tools : undefined,
+        stream: false,
+        options,
+      };
+      if (options.keep_alive !== undefined) {
+        payload.keep_alive = options.keep_alive;
+      }
+
+      const response = await fetch(`${this.endpoint}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: internalController.signal,
+      });
+
+      if (headersTimer) {
+        clearTimeout(headersTimer);
+        headersTimer = undefined;
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        if (isVramAllocationError(errorText)) {
+          throw new OllamaVramError(model, errorText);
+        }
+        throw new Error(`Ollama Tool Call Error (${response.status}): ${errorText || response.statusText}`);
+      }
+
+      const data = (await response.json()) as OllamaChatResponse;
+      const msg = data.message;
+
+      // Check for native Ollama tool_calls
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const call of msg.tool_calls) {
+          if (call.function && typeof call.function.arguments === 'string') {
+            try {
+              call.function.arguments = JSON.parse(call.function.arguments);
+            } catch {}
+          }
+        }
+        return msg;
+      }
+
+      // Fallback: If local model emitted tool call inside raw content (e.g. ```json {"tool": ...} or <tool_call>)
+      const extractedCalls = this.extractToolCallsFromContent(msg.content);
+      if (extractedCalls.length > 0) {
+        msg.tool_calls = extractedCalls;
+      }
+
       return msg;
+    } catch (err: any) {
+      if (internalController.signal.aborted) {
+        if (signal?.aborted) {
+          const abortErr = new Error('Tool execution was aborted by user.');
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
+        if (timedOutPhase === 'headers') {
+          throw new OllamaTimeoutError(
+            'headers',
+            headersTimeoutMs,
+            `Ollama tool call response timed out after ${headersTimeoutMs}ms.`
+          );
+        }
+        if (timedOutPhase === 'total') {
+          throw new OllamaTimeoutError(
+            'total',
+            totalTimeoutMs,
+            `Ollama tool execution exceeded total timeout of ${totalTimeoutMs}ms.`
+          );
+        }
+      }
+      throw err;
+    } finally {
+      if (signal) {
+        signal.removeEventListener('abort', onParentAbort);
+      }
+      if (headersTimer) clearTimeout(headersTimer);
+      if (totalTimer) clearTimeout(totalTimer);
     }
-
-    // Fallback: If local model emitted tool call inside raw content (e.g. ```json {"tool": ...} or <tool_call>)
-    const extractedCalls = this.extractToolCallsFromContent(msg.content);
-    if (extractedCalls.length > 0) {
-      msg.tool_calls = extractedCalls;
-    }
-
-    return msg;
   }
 
   /**
@@ -316,6 +703,24 @@ export class OllamaService {
             },
           });
         }
+      } catch {}
+    }
+
+    if (calls.length > 0) return calls;
+
+    // Pattern 3: Raw JSON object matching tool definition without fences
+    const rawJsonRegex = /\{\s*"(?:name|tool)"\s*:\s*"([a-zA-Z0-9_]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
+    while ((match = rawJsonRegex.exec(content)) !== null) {
+      try {
+        const toolName = match[1];
+        const args = JSON.parse(match[2]);
+        calls.push({
+          id: 'call_' + Math.random().toString(36).slice(2, 9),
+          function: {
+            name: toolName,
+            arguments: args,
+          },
+        });
       } catch {}
     }
 

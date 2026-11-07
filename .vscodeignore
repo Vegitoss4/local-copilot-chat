@@ -6,3 +6,8 @@ src/**
 tsconfig*.json
 *.vsix
 .git/**
+engineering/**
+.github/**
+*.md
+!README.md
+!CHANGELOG.md
