@@ -63,6 +63,43 @@ export class AtomicFileWriter {
   }
 
   /**
+   * Atomically writes raw text to a target file.
+   */
+  public static async writeText(
+    targetUri: vscode.Uri,
+    text: string,
+    options?: AtomicWriteOptions
+  ): Promise<void> {
+    const key = targetUri.fsPath.toLowerCase();
+    const currentQueue = this._writeQueues.get(key) || Promise.resolve();
+
+    const writeOp = currentQueue.catch(() => {}).then(async () => {
+      const dirUri = vscode.Uri.joinPath(targetUri, '..');
+      const tmpUri = this.getTempUri(targetUri);
+
+      try {
+        await vscode.workspace.fs.createDirectory(dirUri);
+        const buffer = new TextEncoder().encode(text);
+
+        await vscode.workspace.fs.writeFile(tmpUri, buffer);
+        await vscode.workspace.fs.rename(tmpUri, targetUri, { overwrite: true });
+
+        if (options?.cleanStaleTempFiles !== false) {
+          await this.cleanupStaleTempFiles(dirUri, path.basename(targetUri.fsPath));
+        }
+      } catch (err) {
+        try {
+          await vscode.workspace.fs.delete(tmpUri, { useTrash: false });
+        } catch {}
+        throw err;
+      }
+    });
+
+    this._writeQueues.set(key, writeOp.catch(() => {}));
+    return writeOp;
+  }
+
+  /**
    * Safely reads and parses a JSON file with automatic corruption backup.
    */
   public static async readJson<T>(

@@ -32,3 +32,4 @@ yarn-error.log*
 # In-place test build artifacts
 test/**/*.js
 test/**/*.js.map
+!test/benchmark/**/*.js

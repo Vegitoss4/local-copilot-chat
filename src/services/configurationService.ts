@@ -14,6 +14,17 @@ export interface ILocalCopilotConfig {
   modelUnloadPolicy: ModelUnloadPolicy;
   modelKeepAliveDuration: string;
   idleUnloadTimeout: number;
+  warnOnCpuOffload: boolean;
+  routerEnabled: boolean;
+  benchmarkRepetitions: number;
+  enableStructuredEditFallback: boolean;
+  suggestAgentModeOnEditIntent: boolean;
+  minExplorationBeforeAsk: number;
+  maxClarificationQuestionsPerTask: number;
+  enableWorkspaceDiscoveryPreStep: boolean;
+  streamToolCalls: boolean;
+  enableEmbeddedToolCallFallback: boolean;
+  headersTimeout: number;
 }
 
 export const CONFIG_DEFAULTS = {
@@ -23,11 +34,22 @@ export const CONFIG_DEFAULTS = {
   temperature: 0.2,
   maxTurns: 25,
   connectTimeout: 5000,
+  headersTimeout: 45000,
   idleStreamTimeout: 30000,
   totalGenerationTimeout: 300000,
   modelUnloadPolicy: 'keepAlive' as ModelUnloadPolicy,
   modelKeepAliveDuration: '5m',
   idleUnloadTimeout: 180000,
+  warnOnCpuOffload: true,
+  routerEnabled: false,
+  benchmarkRepetitions: 3,
+  enableStructuredEditFallback: true,
+  suggestAgentModeOnEditIntent: true,
+  minExplorationBeforeAsk: 3,
+  maxClarificationQuestionsPerTask: 2,
+  enableWorkspaceDiscoveryPreStep: true,
+  streamToolCalls: true,
+  enableEmbeddedToolCallFallback: false,
 } as const;
 
 export const CONFIG_BOUNDS = {
@@ -35,9 +57,12 @@ export const CONFIG_BOUNDS = {
   temperature: { min: 0.0, max: 1.0 },
   maxTurns: { min: 1, max: 100 },
   connectTimeout: { min: 1000, max: 30000 },
+  headersTimeout: { min: 1000, max: 300000 },
   idleStreamTimeout: { min: 5000, max: 120000 },
   totalGenerationTimeout: { min: 30000, max: 900000 },
   idleUnloadTimeout: { min: 30000, max: 600000 },
+  minExplorationBeforeAsk: { min: 0, max: 10 },
+  maxClarificationQuestionsPerTask: { min: 0, max: 10 },
 } as const;
 
 export class ConfigurationService implements vscode.Disposable {
@@ -192,6 +217,113 @@ export class ConfigurationService implements vscode.Disposable {
     return Math.max(CONFIG_BOUNDS.idleUnloadTimeout.min, Math.min(CONFIG_BOUNDS.idleUnloadTimeout.max, intVal));
   }
 
+  public get warnOnCpuOffload(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('context.warnOnCpuOffload');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.warnOnCpuOffload;
+  }
+
+  public get routerEnabled(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('router.enabled');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.routerEnabled;
+  }
+
+  public get benchmarkRepetitions(): number {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('benchmark.repetitions');
+    if (typeof raw === 'number' && !isNaN(raw) && raw >= 1 && raw <= 10) {
+      return Math.floor(raw);
+    }
+    return CONFIG_DEFAULTS.benchmarkRepetitions;
+  }
+
+  public get enableStructuredEditFallback(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('agent.enableStructuredEditFallback');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.enableStructuredEditFallback;
+  }
+
+  public get suggestAgentModeOnEditIntent(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('agent.suggestAgentModeOnEditIntent');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.suggestAgentModeOnEditIntent;
+  }
+
+  public get minExplorationBeforeAsk(): number {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('agent.minExplorationBeforeAsk');
+    if (typeof raw !== 'number' || isNaN(raw) || !isFinite(raw)) {
+      return CONFIG_DEFAULTS.minExplorationBeforeAsk;
+    }
+    const intVal = Math.floor(raw);
+    return Math.max(CONFIG_BOUNDS.minExplorationBeforeAsk.min, Math.min(CONFIG_BOUNDS.minExplorationBeforeAsk.max, intVal));
+  }
+
+  public get maxClarificationQuestionsPerTask(): number {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('agent.maxClarificationQuestionsPerTask');
+    if (typeof raw !== 'number' || isNaN(raw) || !isFinite(raw)) {
+      return CONFIG_DEFAULTS.maxClarificationQuestionsPerTask;
+    }
+    const intVal = Math.floor(raw);
+    return Math.max(CONFIG_BOUNDS.maxClarificationQuestionsPerTask.min, Math.min(CONFIG_BOUNDS.maxClarificationQuestionsPerTask.max, intVal));
+  }
+
+  public get enableWorkspaceDiscoveryPreStep(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('agent.enableWorkspaceDiscoveryPreStep');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.enableWorkspaceDiscoveryPreStep;
+  }
+
+  public get streamToolCalls(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('tools.stream');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.streamToolCalls;
+  }
+
+  public get enableEmbeddedToolCallFallback(): boolean {
+    const config = vscode.workspace.getConfiguration('localCopilot');
+    const inspection = typeof config.inspect === 'function'
+      ? config.inspect<boolean>('tools.enableEmbeddedFallback')
+      : undefined;
+    // User-scoped safety enforcement: workspace-level settings are strictly ignored.
+    // Only globalValue (User/application setting) is honored.
+    if (inspection && typeof inspection.globalValue === 'boolean') {
+      return inspection.globalValue;
+    }
+    const raw = config.get<any>('tools.enableEmbeddedFallback');
+    if (!inspection && typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.enableEmbeddedToolCallFallback;
+  }
+
+  public get headersTimeout(): number {
+    const config = vscode.workspace.getConfiguration('localCopilot');
+    const raw = config.get<any>('timeouts.headersTimeoutMs');
+    if (typeof raw === 'number' && !isNaN(raw) && isFinite(raw)) {
+      const intVal = Math.floor(raw);
+      return Math.max(CONFIG_BOUNDS.headersTimeout.min, Math.min(CONFIG_BOUNDS.headersTimeout.max, intVal));
+    }
+    // Deprecated legacy setting fallback: localCopilot.headersTimeout
+    const legacy = config.get<any>('headersTimeout');
+    if (typeof legacy === 'number' && !isNaN(legacy) && isFinite(legacy)) {
+      const intVal = Math.floor(legacy);
+      return Math.max(CONFIG_BOUNDS.headersTimeout.min, Math.min(CONFIG_BOUNDS.headersTimeout.max, intVal));
+    }
+    return CONFIG_DEFAULTS.headersTimeout;
+  }
+
   public getConfig(): ILocalCopilotConfig {
     return {
       ollamaEndpoint: this.ollamaEndpoint,
@@ -205,6 +337,17 @@ export class ConfigurationService implements vscode.Disposable {
       modelUnloadPolicy: this.modelUnloadPolicy,
       modelKeepAliveDuration: this.modelKeepAliveDuration,
       idleUnloadTimeout: this.idleUnloadTimeout,
+      warnOnCpuOffload: this.warnOnCpuOffload,
+      routerEnabled: this.routerEnabled,
+      benchmarkRepetitions: this.benchmarkRepetitions,
+      enableStructuredEditFallback: this.enableStructuredEditFallback,
+      suggestAgentModeOnEditIntent: this.suggestAgentModeOnEditIntent,
+      minExplorationBeforeAsk: this.minExplorationBeforeAsk,
+      maxClarificationQuestionsPerTask: this.maxClarificationQuestionsPerTask,
+      enableWorkspaceDiscoveryPreStep: this.enableWorkspaceDiscoveryPreStep,
+      streamToolCalls: this.streamToolCalls,
+      enableEmbeddedToolCallFallback: this.enableEmbeddedToolCallFallback,
+      headersTimeout: this.headersTimeout,
     };
   }
 

@@ -18,6 +18,12 @@ import { WorkspaceManager } from '../services/workspaceManager';
 import { AutonomousDebuggerService } from '../services/autonomousDebuggerService';
 import { EvaluationService } from '../services/evaluationService';
 import { PathSecurity } from '../services/pathSecurity';
+import { stripMarkdownFences, assertNoFenceLines } from '../services/fenceSanitizer';
+import { IntentDetector } from '../services/intentDetector';
+import { OllamaConnectionError } from '../services/ollamaService';
+import { StructuredEditFallback } from '../services/structuredEditFallback';
+import { CodeGenerationEngine } from '../services/codeGenerationEngine';
+import * as fs from 'fs';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'localCopilotChat.chatView';
@@ -32,6 +38,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '')
       .trim();
   }
+
+  /**
+   * Sanitizes and escapes text for safe inclusion in HTML attributes and content,
+   * neutralizing script execution and tag injection.
+   */
+  public static escapeHtml(text: string): string {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  private _startWaitingForOllamaTracker(): { stop: () => void } {
+    const startTime = Date.now();
+    let interval: NodeJS.Timeout | undefined;
+    let hasStopped = false;
+
+    const timer = setTimeout(() => {
+      if (hasStopped) return;
+      const sendUpdate = () => {
+        if (hasStopped) return;
+        const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+        this._view?.webview.postMessage({
+          type: 'waitingForOllama',
+          elapsedSeconds,
+          message: 'Waiting for Ollama (request may be queued or model loading)...'
+        });
+      };
+      sendUpdate();
+      interval = setInterval(sendUpdate, 1000);
+    }, 10000);
+
+    return {
+      stop: () => {
+        if (hasStopped) return;
+        hasStopped = true;
+        clearTimeout(timer);
+        if (interval) clearInterval(interval);
+        this._view?.webview.postMessage({ type: 'clearWaitingForOllama' });
+      }
+    };
+  }
   private _view?: vscode.WebviewView;
   private _currentAbortController?: AbortController;
   private _isGenerating: boolean = false;
@@ -45,6 +96,90 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _fetchModelsRequestId: number = 0;
   private _generationCounter: number = 0;
   private _currentGenerationId: number = 0;
+  private _storedAssistantBlocks: Map<string, Array<{ suggestedPath?: string; code: string; language: string }>> = new Map();
+
+  private _extractAndStoreCodeBlocks(messageId: string, text: string): void {
+    const blocks: Array<{ suggestedPath?: string; code: string; language: string }> = [];
+    const fenceRegex = /```([a-zA-Z0-9_\-\.]*)\r?\n([\s\S]*?)```/g;
+    let m: RegExpExecArray | null;
+    while ((m = fenceRegex.exec(text)) !== null) {
+      const lang = m[1].trim();
+      const code = m[2];
+      let suggestedPath: string | undefined;
+      const lines = code.split(/\r?\n/);
+      if (lines.length > 0) {
+        const firstLine = lines[0].trim();
+        const fileMatch = firstLine.match(/^(?:\/\/|#|\/\*|<!--)\s*(?:file:)?\s*([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)\s*(?:\*\/|-->)?$/i);
+        if (fileMatch) {
+          suggestedPath = fileMatch[1].trim();
+        }
+      }
+      blocks.push({ suggestedPath, code, language: lang });
+    }
+    this._storedAssistantBlocks.set(messageId, blocks);
+  }
+
+  private async _handleApplyCodeBlock(messageId: string, blockIndex: number) {
+    const blocks = this._storedAssistantBlocks.get(messageId);
+    if (!blocks || !blocks[blockIndex]) {
+      vscode.window.showErrorMessage('Code block expired or not found.');
+      return;
+    }
+    const block = blocks[blockIndex];
+    let targetPath = block.suggestedPath;
+    if (!targetPath) {
+      targetPath = await vscode.window.showInputBox({
+        prompt: 'Enter relative file path to apply this code block to:',
+        placeHolder: 'src/example.ts',
+      });
+    }
+    if (!targetPath || !targetPath.trim()) return;
+    targetPath = targetPath.trim();
+
+    try {
+      const targetFolder = WorkspaceManager.getTargetWorkspaceFolder();
+      const sessionRootUri = targetFolder?.uri;
+      const validated = PathSecurity.validatePath(targetPath, sessionRootUri, { allowNewFile: true });
+      if (PathSecurity.isSensitiveTarget(targetPath)) {
+        const confirm = await vscode.window.showWarningMessage(
+          `Security Alert: "${targetPath}" is a protected sensitive file. Apply edits?`,
+          'Apply',
+          'Cancel'
+        );
+        if (confirm !== 'Apply') return;
+      }
+
+      const { sanitized, warning } = stripMarkdownFences(block.code, targetPath);
+      assertNoFenceLines(sanitized, targetPath);
+
+      if (warning) {
+        const confirm = await vscode.window.showWarningMessage(warning, 'Proceed', 'Cancel');
+        if (confirm !== 'Proceed') return;
+      }
+
+      const exists = fs.existsSync(validated.uri.fsPath);
+      const engine = new CodeGenerationEngine(sessionRootUri);
+      const res = await engine.applyTransactionalPatches(
+        [
+          {
+            filePath: targetPath,
+            type: exists ? 'modify' : 'create',
+            content: sanitized,
+          },
+        ]
+      );
+
+      if (res.success) {
+        vscode.window.showInformationMessage(`Applied code block to "${targetPath}"!`);
+        const doc = await vscode.workspace.openTextDocument(validated.uri);
+        await vscode.window.showTextDocument(doc);
+      } else {
+        vscode.window.showErrorMessage(`Failed to apply code block: ${res.error}`);
+      }
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Apply code block error: ${err.message}`);
+    }
+  }
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -124,9 +259,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'sendMessage': {
           const mode: 'chat' | 'agent' = payload.mode;
           const rawModel = payload.model;
-          const effectiveModel = (!rawModel || rawModel.toLowerCase() === 'auto')
-            ? this.resolveAutoModel(payload.text, mode)
-            : rawModel;
+          let effectiveModel = rawModel;
+          if (!rawModel || rawModel.toLowerCase() === 'auto') {
+            if (mode === 'agent') {
+              const toolModels = await this._ollamaService.getModelsWithTools();
+              if (toolModels.length > 0) {
+                effectiveModel = toolModels[0];
+              } else {
+                effectiveModel = this._cachedModels[0] || '';
+                this._view?.webview.postMessage({
+                  type: 'addMessage',
+                  role: 'system',
+                  text: '⚠️ **Notice**: None of the installed models declare tool-calling support in /api/tags.',
+                });
+              }
+            } else {
+              effectiveModel = this.resolveAutoModel(payload.text, mode);
+            }
+          } else if (mode === 'agent') {
+            // Pinned model in Agent mode: check capabilities
+            const caps = await this._ollamaService.getModelCapabilities(rawModel);
+            const toolModels = await this._ollamaService.getModelsWithTools();
+            const validation = ModelRouter.validatePinnedModel(rawModel, caps, toolModels);
+            if (!validation.valid && validation.actionableMessage) {
+              this._view?.webview.postMessage({
+                type: 'addMessage',
+                role: 'system',
+                text: `⚠️ **Actionable Notice**: ${validation.actionableMessage} ${validation.fallbackNotice || ''}`,
+              });
+            }
+          }
           this._log(`[Webview] Received sendMessage: "${payload.text}" | Mode: ${mode} | Model: ${effectiveModel}`);
           await this._handleSendMessage(payload.text, effectiveModel, mode, payload.autonomousMode);
           break;
@@ -204,6 +366,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case 'runCommand': {
           await this._runInTerminal(payload.command);
+          break;
+        }
+        case 'applyCodeBlock': {
+          await this._handleApplyCodeBlock(payload.messageId, payload.blockIndex);
+          break;
+        }
+        case 'switchModeAndRun': {
+          const targetMode = payload.targetMode;
+          if (targetMode === 'agent' || targetMode === 'chat') {
+            this._view?.webview.postMessage({ type: 'setMode', mode: targetMode });
+            if (payload.prompt) {
+              const config = ConfigurationService.getInstance().getConfig();
+              await this._handleSendMessage(payload.prompt, config.defaultModel, targetMode);
+            }
+          }
+          break;
+        }
+        case 'enableEmbeddedFallback': {
+          const choice = await vscode.window.showWarningMessage(
+            'Security Warning: Enabling embedded tool fallback allows executing tool calls parsed from model text output when native tool calls are not supported. This applies globally across all workspaces. Enable fallback?',
+            { modal: true },
+            'Enable Fallback'
+          );
+          if (choice !== 'Enable Fallback') {
+            return;
+          }
+          await vscode.workspace
+            .getConfiguration('localCopilot')
+            .update('tools.enableEmbeddedFallback', true, vscode.ConfigurationTarget.Global);
+          const safeModel = ChatViewProvider.escapeHtml(payload.model || '');
+          this._view?.webview.postMessage({
+            type: 'addMessage',
+            role: 'system',
+            text: `✓ **Embedded tool fallback enabled**. Tool calls for model "${safeModel}" will now execute in Agent Mode under strict single-JSON validation.`,
+          });
           break;
         }
         case 'clearChat': {
@@ -406,16 +603,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     try {
+      const { sanitized } = stripMarkdownFences(content, fileName);
+      assertNoFenceLines(sanitized, fileName);
       if (folders && folders.length > 0) {
         const fileUri = AgentToolService.getFileUri(fileName);
-        await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(content));
+        await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(sanitized));
         const doc = await vscode.workspace.openTextDocument(fileUri);
         await vscode.window.showTextDocument(doc);
         vscode.window.showInformationMessage(`Created and opened "${fileName}"!`);
       } else {
         const ext = fileName.split('.').pop() || '';
         const doc = await vscode.workspace.openTextDocument({
-          content,
+          content: sanitized,
           language: ChatViewProvider.mapExtensionToLanguage(ext),
         });
         await vscode.window.showTextDocument(doc);
@@ -492,7 +691,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       this._cachedModels = models;
       const config = ConfigurationService.getInstance();
-      const defaultModel = config.defaultModel || (models[0] || 'qwen2.5-coder:7b');
+      const defaultModel = config.defaultModel || (models[0] || '');
 
       this._view?.webview.postMessage({
         type: 'modelsList',
@@ -527,22 +726,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public resolveAutoModel(prompt: string, mode: string): string {
-    // Agent mode starts with reasoning/orchestration
-    if (mode === 'agent') {
-      const deepseek = this._cachedModels.find(m => m.toLowerCase().includes('deepseek-r1')) || 'deepseek-r1:8b';
-      return deepseek;
-    }
-
-    // Keywords that require deep reasoning
-    const reasoningKeywords = /\b(why|explain|debug|diagnose|architecture|architect|plan|error|analyze|review|design|trace)\b/i;
-    if (reasoningKeywords.test(prompt)) {
-      const deepseek = this._cachedModels.find(m => m.toLowerCase().includes('deepseek-r1')) || 'deepseek-r1:8b';
-      return deepseek;
-    }
-
-    // Default to fast syntax generation
-    const qwen = this._cachedModels.find(m => m.toLowerCase().includes('qwen2.5-coder')) || 'qwen2.5-coder:7b';
-    return qwen;
+    const caps = this._ollamaService?.getCapabilityCache ? this._ollamaService.getCapabilityCache() : undefined;
+    const decision = ModelRouter.classifyIntent(
+      prompt,
+      mode === 'agent' ? 'agent' : 'chat',
+      this._cachedModels,
+      caps && caps.size > 0 ? caps : undefined
+    );
+    return decision.model || this._cachedModels[0] || '';
   }
 
   private _savePromise: Promise<void> = Promise.resolve();
@@ -828,6 +1019,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // BRANCH A: CHAT MODE (Conversational Q&A via streamChat)
       // =========================================================================
       if (mode === 'chat') {
+        if (config.suggestAgentModeOnEditIntent) {
+          const lastAssistantTurn = this._chatHistory
+            .slice()
+            .reverse()
+            .find((m) => m.role === 'assistant')?.content;
+
+          const intent = IntentDetector.detectEditIntent(userText, lastAssistantTurn);
+          if (intent.hasEditIntent) {
+            ExtensionLogger.log(
+              `[IntentDetector] Suggesting Agent Mode: ${intent.reason}`
+            );
+            this._view?.webview.postMessage({
+              type: 'showEditIntentBanner',
+              reason: intent.reason,
+              prompt: userText,
+            });
+          }
+        }
+
         let enrichedPrompt = userText;
         const mentionsWorkspace = /\b(project|workspace|repo|repository|codebase|solution)\b/i.test(userText);
         if (userText.includes('@workspace') || mentionsWorkspace) {
@@ -839,6 +1049,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         const timeouts: OllamaTimeoutOptions = {
           connectTimeoutMs: config.connectTimeout,
+          headersTimeoutMs: config.headersTimeout,
           idleStreamTimeoutMs: config.idleStreamTimeout,
           totalTimeoutMs: config.totalGenerationTimeout,
         };
@@ -848,20 +1059,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           : (config.modelKeepAliveDuration || '5m');
 
         assistantResponse = '';
-        await this._ollamaService.streamChat(
-          resolvedModel,
-          this._chatHistory,
-          (chunk) => {
-            assistantResponse += chunk;
-            this._view?.webview.postMessage({ type: 'streamChunk', chunk });
-          },
-          signal,
-          { num_ctx: numCtx, temperature, keep_alive: keepAlive },
-          timeouts
-        );
+        const waitingTracker = this._startWaitingForOllamaTracker();
+        try {
+          await this._ollamaService.streamChat(
+            resolvedModel,
+            this._chatHistory,
+            (chunk) => {
+              waitingTracker.stop();
+              assistantResponse += chunk;
+              this._view?.webview.postMessage({ type: 'streamChunk', chunk });
+            },
+            signal,
+            { num_ctx: numCtx, temperature, keep_alive: keepAlive },
+            timeouts
+          );
+        } finally {
+          waitingTracker.stop();
+        }
 
         // Phase 5.5 H3: Strip internal thought tokens before saving to history
         const cleanAssistantResponse = ChatViewProvider.stripThoughtTokens(assistantResponse);
+        const messageId = 'msg-' + Date.now() + '-' + crypto.randomUUID().slice(0, 8);
+        this._extractAndStoreCodeBlocks(messageId, cleanAssistantResponse);
+        this._view?.webview.postMessage({
+          type: 'setAssistantMessageId',
+          messageId,
+        });
+
         this._chatHistory.push({ role: 'assistant', content: cleanAssistantResponse });
         await this._saveChatHistoryToDisk(sessionRootUri);
         return;
@@ -870,6 +1094,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // =========================================================================
       // BRANCH B: AGENT MODE (Hierarchical Multi-Agent Swarm with VRAM Time-Slicing)
       // =========================================================================
+      const caps = await this._ollamaService.getModelCapabilities(resolvedModel);
+      if (caps.status === 'unsupported' || (!caps.hasTools && caps.status !== 'unknown')) {
+        if (config.enableStructuredEditFallback) {
+          this._view?.webview.postMessage({
+            type: 'streamChunk',
+            chunk: `ℹ️ Model \`${resolvedModel}\` does not declare tool calling support in \`/api/show\`. Activating structured-edit fallback protocol.\n\n`,
+          });
+          ExtensionLogger.log(
+            `[CapabilityCheck] Model "${resolvedModel}" lacks tools; activated structured-edit fallback protocol.`
+          );
+        } else {
+          const toolsModels = await this._ollamaService.getModelsWithTools();
+          const suggestion = toolsModels.length > 0
+            ? ` Installed models with tool support: ${toolsModels.map((m) => `\`${m}\``).join(', ')}.`
+            : ' No installed models declare tool calling in /api/tags.';
+          this._view?.webview.postMessage({
+            type: 'streamError',
+            error: `Model "${resolvedModel}" does not declare tool calling support in /api/show.${suggestion}`,
+          });
+          return;
+        }
+      }
+
+      // Check behavioral probe for embedded-style tool calling when fallback is OFF
+      if (!config.enableEmbeddedToolCallFallback) {
+        const probe = await this._ollamaService.probeModelToolSupport(resolvedModel).catch(() => null);
+        if (probe && !probe.emittedNativeCalls && probe.emittedContentCalls) {
+          const safeModel = ChatViewProvider.escapeHtml(resolvedModel);
+          this._view?.webview.postMessage({
+            type: 'addMessage',
+            role: 'system',
+            text: `⚠️ **Embedded Tool Calling Required**: Model \`${safeModel}\` does not support Ollama's native tool calling and outputs tool calls in message text. Embedded tool fallback is currently **disabled** (default).\n\n<button type="button" class="banner-btn" data-action="enableEmbeddedFallback" data-model="${safeModel}">Enable Embedded Fallback</button>`,
+          });
+          ExtensionLogger.log(
+            `[AgentMode] Model "${resolvedModel}" probed as embedded-style; prompted user to explicitly enable embedded tool fallback.`
+          );
+        }
+      }
+
       this._currentAgent = new SwarmOrchestrator(this._ollamaService, {
         maxTurns,
         numCtx,
@@ -880,27 +1143,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         workspaceRootUri: sessionRootUri,
       });
 
-      const finalResult = await this._currentAgent.runTask(
-        userText,
-        {
-          onStatusUpdate: (status: string) => {
-            this._view?.webview.postMessage({ type: 'agentStatus', status });
-          },
-          onProgress: (event: ProgressEvent) => {
-            this._view?.webview.postMessage({ type: 'agentProgress', event });
-          },
-          onThought: (chunk: string) => {
-            this._view?.webview.postMessage({ type: 'streamThought', chunk });
-          },
-          onText: (chunk: string) => {
-            this._view?.webview.postMessage({ type: 'streamChunk', chunk });
-          },
-          onToolStart: (call: ToolCall) => {
-            this._view?.webview.postMessage({ type: 'toolStart', call });
-          },
-          onToolEnd: (result: ToolResult) => {
-            this._view?.webview.postMessage({ type: 'toolEnd', result });
-          },
+      const waitingTracker = this._startWaitingForOllamaTracker();
+      let finalResult: string | undefined;
+      try {
+        finalResult = await this._currentAgent.runTask(
+          userText,
+          {
+            onStatusUpdate: (status: string) => {
+              waitingTracker.stop();
+              this._view?.webview.postMessage({ type: 'agentStatus', status });
+            },
+            onProgress: (event: ProgressEvent) => {
+              waitingTracker.stop();
+              this._view?.webview.postMessage({ type: 'agentProgress', event });
+            },
+            onThought: (chunk: string) => {
+              waitingTracker.stop();
+              this._view?.webview.postMessage({ type: 'streamThought', chunk });
+            },
+            onText: (chunk: string) => {
+              waitingTracker.stop();
+              this._view?.webview.postMessage({ type: 'streamChunk', chunk });
+            },
+            onToolStart: (call: ToolCall) => {
+              waitingTracker.stop();
+              this._view?.webview.postMessage({ type: 'toolStart', call });
+            },
+            onToolEnd: (result: ToolResult) => {
+              waitingTracker.stop();
+              this._view?.webview.postMessage({ type: 'toolEnd', result });
+            },
           requestApproval: (req: ApprovalRequest) => {
             return new Promise<boolean>((resolve) => {
               this._pendingApprovals.set(req.id, resolve);
@@ -922,6 +1194,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         },
         signal
       );
+    } finally {
+      waitingTracker.stop();
+    }
 
       // Phase 5.5 H3: Strip internal thought tokens before saving to history
       const cleanFinalResult = ChatViewProvider.stripThoughtTokens(finalResult || 'Swarm task completed.');
@@ -950,6 +1225,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           } else {
             this._view?.webview.postMessage({ type: 'streamError', error: err.message });
           }
+        } else if (err instanceof OllamaConnectionError || err.name === 'OllamaConnectionError') {
+          const diag = err.diagnostics;
+          ExtensionLogger.log(
+            `[Ollama Error] ${diag.errorName} for ${diag.model} at ${diag.endpoint}: ${diag.errorMessage} (elapsed: ${diag.elapsedMs}ms, genId: ${generationId})`
+          );
+          this._view?.webview.postMessage({
+            type: 'ollamaError',
+            diagnostics: {
+              ...diag,
+              genId: String(generationId),
+            },
+          });
         } else {
           this._view?.webview.postMessage({ type: 'streamError', error: err.message || 'Execution error.' });
         }
@@ -1192,6 +1479,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     .connection-banner button.banner-btn:hover {
       background: var(--vscode-button-hoverBackground, #0062a3);
+    }
+
+    /* Waiting for Ollama Progressive State Box */
+    .waiting-ollama-box {
+      background: var(--vscode-editorWidget-background, #252526);
+      border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 8px 0;
+      font-size: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+    .waiting-ollama-header {
+      font-weight: 600;
+      color: var(--vscode-editorWarning-foreground, #cca700);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .waiting-ollama-meta {
+      font-size: 11px;
+      opacity: 0.85;
+      margin-top: 4px;
+    }
+    .waiting-ollama-actions button {
+      padding: 3px 10px;
+      font-size: 11px;
+      border-radius: 3px;
+      cursor: pointer;
     }
 
     /* Messages Container */
@@ -1586,6 +1902,79 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       gap: 6px;
       padding: 16px;
     }
+    .edit-intent-banner {
+      background: rgba(0, 122, 204, 0.15);
+      border: 1px solid var(--vscode-editorInfo-foreground, #007acc);
+      border-radius: 6px;
+      padding: 6px 10px;
+      margin: 4px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+    }
+    .intent-banner-content {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+    }
+    .intent-text {
+      flex: 1;
+      line-height: 1.3;
+    }
+    .intent-btn-primary {
+      background: var(--vscode-button-background, #007acc);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .intent-btn-primary:hover {
+      background: var(--vscode-button-hoverBackground, #0062a3);
+    }
+    .intent-btn-dismiss {
+      background: transparent;
+      border: none;
+      color: var(--vscode-descriptionForeground, #aaa);
+      cursor: pointer;
+      font-size: 13px;
+      padding: 0 4px;
+    }
+    .ollama-error-card {
+      background: rgba(244, 67, 54, 0.1);
+      border: 1px solid var(--vscode-errorForeground, #f14c4c);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-top: 8px;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .ollama-error-title {
+      font-weight: 700;
+      color: var(--vscode-errorForeground, #f14c4c);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .ollama-error-body {
+      opacity: 0.9;
+      line-height: 1.4;
+    }
+    .ollama-error-meta {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground, #999);
+      border-top: 1px dashed rgba(255, 255, 255, 0.1);
+      padding-top: 4px;
+      font-family: var(--code-font);
+    }
   </style>
 </head>
 <body>
@@ -1641,6 +2030,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
+  <!-- Non-modal Intent Suggestion Banner -->
+  <div id="edit-intent-banner" class="edit-intent-banner" style="display:none;">
+    <div class="intent-banner-content">
+      <span class="intent-icon">💡</span>
+      <span id="edit-intent-text" class="intent-text">This request looks like it needs file edits. Switch to Agent mode?</span>
+      <button type="button" id="switch-and-run-btn" class="intent-btn-primary" data-action="switchAndRunIntent">Switch to Agent &amp; Run</button>
+      <button type="button" id="dismiss-intent-btn" class="intent-btn-dismiss" data-action="dismissIntent">✕</button>
+    </div>
+  </div>
+
   <!-- Footer -->
   <div class="footer">
     <div class="context-bar">
@@ -1691,6 +2090,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let currentRawThought = '';
     let currentThinkContainer = null;
     let stepCount = 0;
+
+    let pendingIntentPrompt = '';
+    let currentLastAssistantMessageId = '';
 
     window.onerror = function(msg, url, line, col, err) {
       try {
@@ -1927,6 +2329,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (e.preventDefault) e.preventDefault();
 
       switch (action) {
+        case 'enableEmbeddedFallback': {
+          const model = actionEl.getAttribute('data-model');
+          vscode.postMessage({ type: 'enableEmbeddedFallback', model: model || undefined });
+          actionEl.disabled = true;
+          actionEl.textContent = 'Enabling...';
+          break;
+        }
         case 'setModeChat':
           setMode('chat');
           break;
@@ -1963,6 +2372,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'stopGeneration':
           stopGeneration();
           break;
+        case 'keepWaiting': {
+          const box = document.getElementById('waiting-ollama-box');
+          if (box) box.style.display = 'none';
+          break;
+        }
         case 'submitUserMessage':
           submitUserMessage();
           break;
@@ -2004,6 +2418,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (code && lang && window.createFile) {
             window.createFile(code, lang);
           }
+          break;
+        }
+        case 'applyCodeBlock': {
+          var blockIdx = parseInt(actionEl.getAttribute('data-block-index') || '0', 10);
+          var msgId = actionEl.getAttribute('data-msgid') || currentLastAssistantMessageId;
+          if (msgId) {
+            vscode.postMessage({ type: 'applyCodeBlock', messageId: msgId, blockIndex: blockIdx });
+          }
+          break;
+        }
+        case 'switchAndRunIntent': {
+          var banner = document.getElementById('edit-intent-banner');
+          if (banner) banner.style.display = 'none';
+          setMode('agent');
+          if (pendingIntentPrompt) {
+            submitUserMessage(pendingIntentPrompt);
+          }
+          break;
+        }
+        case 'dismissIntent': {
+          var banner = document.getElementById('edit-intent-banner');
+          if (banner) banner.style.display = 'none';
           break;
         }
       }
@@ -2292,9 +2728,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
 
+        case 'waitingForOllama': {
+          let box = document.getElementById('waiting-ollama-box');
+          if (!box) {
+            box = document.createElement('div');
+            box.id = 'waiting-ollama-box';
+            box.className = 'waiting-ollama-box';
+            if (container) container.appendChild(box);
+          }
+          box.style.display = 'block';
+          box.innerHTML =
+            '<div class="waiting-ollama-header">⏳ <strong>Waiting for Ollama</strong> (request may be queued or model loading)</div>' +
+            '<div class="waiting-ollama-meta">Elapsed time: ' + escapeHtml(String(msg.elapsedSeconds || 0)) + 's</div>' +
+            '<div class="waiting-ollama-actions" style="margin-top:8px; display:flex; gap:8px;">' +
+              '<button type="button" class="btn-stop" data-action="stopGeneration" style="background:#d9534f; color:#fff; border:none; padding:3px 8px; border-radius:3px; cursor:pointer;">Cancel</button>' +
+              '<button type="button" class="btn-keep" data-action="keepWaiting" style="background:transparent; color:var(--vscode-foreground); border:1px solid var(--vscode-widget-border); padding:3px 8px; border-radius:3px; cursor:pointer;">Keep waiting</button>' +
+            '</div>';
+          if (container) container.scrollTop = container.scrollHeight;
+          break;
+        }
+
+        case 'clearWaitingForOllama': {
+          const box = document.getElementById('waiting-ollama-box');
+          if (box) {
+            box.remove();
+          }
+          break;
+        }
+
         case 'streamEnd':
         case 'streamAborted': {
           setStreamingState(false);
+          const box = document.getElementById('waiting-ollama-box');
+          if (box) box.remove();
           if (currentWorkingAccordion) {
             if (currentWorkingSpinner) {
               currentWorkingSpinner.textContent = '✅';
@@ -2305,6 +2771,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
           }
           currentAssistantBubble = null;
+          break;
+        }
+
+        case 'showEditIntentBanner': {
+          var banner = document.getElementById('edit-intent-banner');
+          var bannerText = document.getElementById('edit-intent-text');
+          if (banner && bannerText) {
+            bannerText.textContent = '💡 ' + (msg.reason || 'This request looks like it needs file edits. Switch to Agent mode?');
+            pendingIntentPrompt = msg.prompt || '';
+            banner.style.display = 'flex';
+          }
+          break;
+        }
+
+        case 'setAssistantMessageId': {
+          currentLastAssistantMessageId = msg.messageId;
+          if (currentAssistantBubble) {
+            var applyBtns = currentAssistantBubble.querySelectorAll('.code-btn-apply');
+            for (var b = 0; b < applyBtns.length; b++) {
+              applyBtns[b].setAttribute('data-msgid', msg.messageId);
+            }
+          }
+          break;
+        }
+
+        case 'ollamaError': {
+          setStreamingState(false);
+          if (currentAssistantBubble) {
+            var d = msg.diagnostics || {};
+            var errorTitle = d.isHttpError ? '⚠️ Ollama HTTP Error (' + d.httpStatus + ')' : '⚠️ Connection to Ollama Failed (' + (d.causeCode || 'Network Error') + ')';
+            var errorHtml = '<div class="ollama-error-card">' +
+              '<div class="ollama-error-title">' + escapeHtml(errorTitle) + '</div>' +
+              '<div class="ollama-error-body">' + escapeHtml(d.errorMessage || 'No response received from Ollama.') + '</div>' +
+              '<div class="ollama-error-meta">' +
+                'Model: ' + escapeHtml(d.model || 'unknown') +
+                ' | Endpoint: ' + escapeHtml(d.endpoint || '') +
+                (d.elapsedMs ? ' | Elapsed: ' + d.elapsedMs + 'ms' : '') +
+                (d.genId ? ' | GenId: ' + escapeHtml(d.genId) : '') +
+              '</div>' +
+            '</div>';
+            currentAssistantBubble.innerHTML += errorHtml;
+          }
           break;
         }
 
@@ -2510,6 +3018,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       var html = "";
+      var blockCount = 0;
 
       for (var k = 0; k < normalizedParts.length; k++) {
         var item = normalizedParts[k];
@@ -2550,7 +3059,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             actionButtons += '<button data-action="runCommand" data-code="' + encodedCode + '" style="color:#4ec9b0; font-weight:bold;">▶️ Run</button>';
           } else {
             actionButtons += '<button data-action="insertCode" data-code="' + encodedCode + '">Insert</button>' +
-              '<button data-action="createFile" data-code="' + encodedCode + '" data-lang="' + encodedLang + '">📄 Create File</button>';
+              '<button data-action="createFile" data-code="' + encodedCode + '" data-lang="' + encodedLang + '">📄 Create File</button>' +
+              '<button class="code-btn-apply" data-action="applyCodeBlock" data-block-index="' + blockCount + '" data-msgid="' + escapeHtml(currentLastAssistantMessageId || '') + '">📝 Apply to file</button>';
+            blockCount++;
           }
 
           html += '<pre><div class="code-header"><span>' + escapeHtml(safeLang) + '</span><div class="code-actions">' + actionButtons + '</div></div><code>' + escaped + '</code></pre>';

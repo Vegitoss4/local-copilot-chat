@@ -1,0 +1,253 @@
+[
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "auth_choice",
+    "repetition": 1,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "planner"
+    ]
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "auth_choice",
+    "repetition": 2,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "planner"
+    ]
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "auth_choice",
+    "repetition": 3,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "delegate_task"
+    ]
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "db_creds",
+    "repetition": 1,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "finish_task"
+    ]
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "db_creds",
+    "repetition": 2,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "finish_task"
+    ]
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "db_creds",
+    "repetition": 3,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "finish_task"
+    ]
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "priority_type",
+    "repetition": 1,
+    "askAttempts": 2,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "ask_user"
+    ]
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "priority_type",
+    "repetition": 2,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "delegate_task"
+    ]
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "priority_type",
+    "repetition": 3,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "delegate_task"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "auth_choice",
+    "repetition": 1,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "delegate_task"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "auth_choice",
+    "repetition": 2,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "delegate_task"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "auth_choice",
+    "repetition": 3,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "store_memory",
+      "delegate_task"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "db_creds",
+    "repetition": 1,
+    "askAttempts": 0,
+    "askAllowed": false,
+    "underAsked": true,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "list_dir",
+      "list_dir",
+      "search_workspace"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "db_creds",
+    "repetition": 2,
+    "askAttempts": 0,
+    "askAllowed": false,
+    "underAsked": true,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "list_dir",
+      "list_dir",
+      "search_workspace"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "db_creds",
+    "repetition": 3,
+    "askAttempts": 0,
+    "askAllowed": false,
+    "underAsked": true,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "list_dir",
+      "search_workspace",
+      "search_workspace"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "priority_type",
+    "repetition": 1,
+    "askAttempts": 2,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "ask_user",
+      "store_memory"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "priority_type",
+    "repetition": 2,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "store_memory",
+      "ask_user"
+    ]
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "priority_type",
+    "repetition": 3,
+    "askAttempts": 1,
+    "askAllowed": true,
+    "underAsked": false,
+    "escapeHatchFired": false,
+    "toolsUsed": [
+      "ask_user",
+      "list_dir",
+      "list_dir"
+    ]
+  }
+]

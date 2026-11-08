@@ -1,6 +1,6 @@
 # Local Copilot Chat — Implementation Journal & Recovery Status
 
-**Current Date / Timestamp:** 2026-11-07T17:20:00+05:30  
+**Current Date / Timestamp:** 2026-11-08T12:30:00+05:30
 **Branch:** `main`  
 **Commit Authorization:** NOT GRANTED (Working tree changes only, zero Git commits created)
 
@@ -8,16 +8,15 @@
 
 ## 1. Executive Summary & Verification Checkpoint
 
-This document serves as the master recovery checkpoint and architectural record for the end-to-end engineering execution across Phase 1 through Phase 10 of `local-copilot-chat`.
+This document serves as the master recovery checkpoint and architectural record for the end-to-end engineering execution across Phase 1 through Phase 12 of `local-copilot-chat`.
 
 ### Key Verification Metrics:
-- **Unit Test Suite**: **361 passing, 0 pending, 0 failing across 41 test suites (5s execution time)**.
-- **Real Integration Tier**: **23 passing, 3 pending (offline mode), 26 passing (online mode)**.
-- **Windows Real-Process Tests**: `npm --version`, `npx --version`, `node --version`, and `git --version` verified via canonical resolution with `shell: false`.
+- **Unit Test Suite**: **580 passing, 0 pending, 0 failing across 59 test suites**.
+- **Real Integration Tier**: Real HTTP server tests covering streaming inactivity, 62s long thinking, 60s and 120s delayed headers, and exceeded headers limits.
+- **Real VS Code Extension Host Tier**: **6 passing, 0 failing in real Electron host**.
 - **TypeScript Compilation**: `npm run compile` (0 errors), `npm run compile:test` (0 errors), `npm run vscode:prepublish` (0 errors).
 - **Git Hygiene**: `git diff --check` passed cleanly; zero git commits made per strict user instructions.
-- **Network Independence**: 100% of unit tests execute offline using deterministic in-memory VS Code and Ollama mocks.
-- **Hardware Profile**: 8 GB VRAM budget strictly enforced via single-resident model execution, sequential FIFO inference queue, and automatic non-target model eviction.
+- **Hardware Profile**: NVIDIA GeForce RTX 3070 (8,192 MB VRAM), Driver 617.14, single-resident model execution under 8 GB constraints.
 
 ---
 
@@ -191,6 +190,26 @@ npm run test:unit
 ### 8. [DEFECT-MED-03] Terminal Approval for Tier 3 Commands (`src/providers/chatViewProvider.ts`)
 - **Remediation**: Updated `_runInTerminal` to classify commands using `CommandClassifier`. Tier 4 commands are rejected; Tier 3 mutating commands prompt the user with a modal confirmation dialog before executing.
 
+### 9. [SCOPED-FIX-ITEMS-1-7] Mode Intelligence, Fence Sanitization & DX Hardening
+- **Fence Sanitization Engine (`fenceSanitizer.ts`)**: Outer wrapper stripping, doc file fence preservation, boundary rejection on source files, interior fence warning badge in diff preview.
+- **Intent Detection & Non-modal Switch Banner (`intentDetector.ts`)**: Direct action keywords and context-aware referential commands trigger non-modal suggestion banner. Informational questions are suppressed. Zero silent mode switches.
+- **Dynamic Model Capability Check (`ollamaService.ts`)**: Derived strictly from `POST /api/show` capabilities (`tools`). Suggests alternatives dynamically from `/api/tags`. In-memory capability caching.
+- **Structured-Edit Fallback Protocol (`structuredEditFallback.ts`)**: Strict CREATE, SEARCH/REPLACE, and DELETE schema validation, PathSecurity checks, and transactional application with diff preview.
+- **Webview-Secure "Apply to File" RPC (`MessageValidator.ts`, `chatViewProvider.ts`)**: Opaque `messageId` + `blockIndex` contract; host retrieves code and path from internal trusted memory.
+- **Real Error Diagnostics (`OllamaConnectionError`)**: Distinguishes connection drops from non-2xx HTTP responses, capturing error name, cause code, elapsed time, model, prompt size, generation ID, and instant /api/ps + /api/tags snapshot.
+
+### 10. [SCOPED-FIX-ITEMS-A-E] Workspace Discovery & Explore-Before-Ask Gate
+- **Bounded Deterministic Workspace Discovery (`workspaceDiscoveryService.ts`)**: Bounded manifest search (100 entries, depth 3, 2500ms timeout) injecting stacks, key files, git status, and diagnostics into initial planning context without LLM calls.
+- **Explore-Before-Ask Gate (`exploreBeforeAskGate.ts`)**: Blocks premature `ask_user` until exploration quota ($N \ge 3$) is met. Clarification budget cap ($M=2$). Three escape hatches (deadlock, empty workspace, tool-less/failing model). Redundancy check against discovered facts.
+- **Rule 8 Rewording**: Clarified in `agentRegistry.ts` that the agent must inspect files before asking questions.
+
+### 11. [STREAMING-HOST-TIMING] Streaming Tool Calls, Real Electron Host Harness & Measurement Reconciliation
+- **Streaming Tool Calling (`ollamaService.ts`)**: `stream: true` default in `chatWithTools` accumulating tool calls across chunk deltas, delivering 25–29ms TTFB on `qwen2.5-coder:7b` and 61ms on `qwen3.5:9b` (compared to non-streaming total wait times of ~814ms and ~1209ms) with progressive thinking token progress.
+- **Multi-Tier Inactivity Timeouts (`ollamaService.ts`)**: Independent connect (5s), headers (15s/45s), sliding stream inactivity (30s resetting on every chunk), and total (180s/300s).
+- **Probe Safety & Strict Embedded Gating (`ollamaService.ts`)**: Probes cached by `modelName + digest` without model eviction; embedded fallback default OFF (`localCopilot.tools.enableEmbeddedFallback`).
+- **Real Electron Extension Host Harness (`smokeRealHost.test.ts`)**: 6 passing tests in real extension host validating `openTextDocument`, `applyEdit`, `save()`, UTF-8 BOM, CRLF preservation, and modal cancellation rejection safety.
+- **Harness Invalidation**: Earlier mock write/outcome metrics formally marked INVALID due to harness defects (unbridged mock `openTextDocument`, stale closure `save()`). First-turn ask rates remain valid. Valid measurements re-run with positive controls, $N=3$ smoke traces, and 24-cell reduced ablation.
+
 ---
 
 ## 4. Verification & Test Summary
@@ -208,6 +227,12 @@ npm run vscode:prepublish
 git diff --check
 > 0 errors
 
-npm test
-> 264 passing (5s) across 24 test suites, 0 failing
+npm run test:unit
+> 559 passing (6s) across 56 test suites, 0 failing
+
+npm run test:real
+> 34 passing across 9 test suites, 0 failing
+
+npm run test:integration (real VS Code Electron extension host)
+> 6 passing (28s), 0 failing
 ```

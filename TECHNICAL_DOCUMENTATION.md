@@ -363,6 +363,66 @@ Phase 7 transformed all Phase 5.5 and Phase 6 autonomous capabilities into unifi
 9. **Multi-Strategy Code Fallbacks (`src/services/multiStrategyCodeGenerator.ts`)**:
    - 3-tier fallback code patching (exact `str_replace` -> normalized whitespace/CRLF -> anchor-based block replacement).
 
+### 8.2 Mode Intelligence, Fence Sanitization & DX Hardening
+1. **Markdown Fence Sanitizer (`src/services/fenceSanitizer.ts`)**:
+   - Strips outer ```` ```lang ```` fence wrapper and external conversational commentary while strictly preserving interior lines, line endings (CRLF/LF), and BOM.
+   - Preserves code fences inside markdown documentation (`.md`, `.mdx`, `.rst`, `.txt`).
+   - Rejects unstripped fence lines at start/end of source files (`.cs`, `.ts`, `.py`, `.json`).
+   - Flags interior fence lines in source files with a warning badge in diff preview.
+   - Sanitizes all write paths (`AgentToolService.createFile`, `AppGeneratorService.writeFile`, `CodeGenerationEngine`, `ChatViewProvider._createFileInWorkspace`).
+2. **Intent Detector & Non-Modal Switch Banner (`src/services/intentDetector.ts`)**:
+   - Deterministic classification of action verbs and context-aware referential commands.
+   - Suppresses suggestion banner on informational questions.
+   - Non-modal suggestion banner displayed in Webview UI with zero silent mode switching.
+3. **Model Capability Check & Structured-Edit Fallback (`src/services/structuredEditFallback.ts`)**:
+   - Queries `POST /api/show` capabilities array dynamically; no hardcoded model names.
+   - Suggests alternatives from `GET /api/tags` declaring tool calling.
+   - Strict schema validation for CREATE, SEARCH/REPLACE, and DELETE blocks with PathSecurity and transactional execution.
+4. **Webview-Secure "Apply to File" RPC (`src/services/messageValidator.ts`, `src/providers/chatViewProvider.ts`)**:
+   - Webview sends only opaque `messageId` and `blockIndex`. Host retrieves code and path from internal trusted transcript.
+5. **Real Error Diagnostic Extraction (`src/services/ollamaService.ts`)**:
+   - `OllamaConnectionError` captures `error.name`, `causeCode`, elapsed time, model, prompt size, generation ID, non-2xx HTTP status and redacted response body, and takes immediate `/api/ps` + `/api/tags` snapshots.
+6. **Bounded Workspace Discovery Pre-Step (`src/services/workspaceDiscoveryService.ts`)**:
+   - Plain TypeScript analysis without LLM queries executing before the first planning turn.
+   - Bounds: max 100 entries, max depth 3, max 2500ms timeout, dynamic character budget derived from `numCtx` (1500 to 8000 characters).
+   - Detects stacks from manifests (`.csproj`, `.sln`, `package.json`, `angular.json`, `tsconfig.json`, `pom.xml`, `requirements.txt`, `Cargo.toml`, `go.mod`), identifies key entry files present/missing, inspects read-only git status via `GitExecutionIsolator`, and reads existing VS Code diagnostics without unapproved builds.
+   - Sanitizes untrusted strings: control characters stripped, forged delimiters (`</untrusted_workspace_discovery>`) and prompt injections neutralized.
+7. **Explore-Before-Ask Gate & Clarification Budget (`src/services/exploreBeforeAskGate.ts`)**:
+   - Shared gate for Swarm and Single-Agent loops.
+   - Requires at least $N$ distinct successful read-only exploration calls (`minExplorationBeforeAsk`, default 3) before permitting clarification questions.
+   - Deadlock escape hatches: unlocks after 2 task rejections, when discovery found 0 relevant files, or when model lacks tools / has repeated failures.
+   - Advisory redundancy check rejects questions about already-discovered facts once with actionable guidance.
+   - Enforces configurable clarification question budget cap (`maxClarificationQuestionsPerTask`, default 2).
+
+8. **Streaming Tool Calls & Inactivity Architecture (`src/services/ollamaService.ts`)**:
+   - `chatWithTools` defaults to `stream: true`, progressively receiving deltas and assembling partial tool calls (`index`, `id`, `name`, `arguments`).
+   - Slashes TTFB from >800ms (`qwen2.5-coder:7b`) and >1200ms (`qwen3.5:9b`) down to 25–61ms.
+   - **4-Tier Timeout Architecture**:
+     - `connectTimeout` (5s): Socket establishment timeout.
+     - `headersTimeoutMs` (`localCopilot.timeouts.headersTimeoutMs`, default 45,000ms): Hard first-byte limit for response headers. Derived from empirical cold load (~9.6s for 9B on RTX 3070) + prompt evaluation (~5.1s) + queue serialization allowance (~30s) = ~44.7s -> 45s default. Backward compatible with legacy `localCopilot.headersTimeout`.
+     - Progressive waiting state: After 10s without response headers, displays visible UI state `"Waiting for Ollama (request may be queued or model loading)"` with dynamic elapsed seconds, `"Cancel"` (`stopGeneration`), and `"Keep waiting"`.
+     - Post-first-byte timer policy: The headers timer is cleared as soon as headers/first byte arrive. Thereafter, only sliding `idleStreamTimeout` (30s) resetting on each chunk, and total `totalGenerationTimeout` (300s) turn ceiling apply.
+   - Dynamic capability probe cached by `modelName + digest` without model eviction. Embedded fallback strictly user-scoped (`scope: "application"`), requiring host modal confirmation, HTML escaping via `ChatViewProvider.escapeHtml`, and single-call message validation.
+
+9. **Data-Driven Model Routing & Heuristic Rationale (`src/services/modelRouter.ts`)**:
+   - Zero hardcoded model names in routing or ranking.
+   - Heuristic weights documented in `ROUTER_HEURISTIC_WEIGHTS` (relative preference weights, not empirical transfer functions):
+     - `PROFILE_TOOL_RELIABILITY_WEIGHT` (100): Scales toolCallReliability (0.0 to 1.0) to 0-100 pts in agent mode.
+     - `NATIVE_TOOL_PROBE_BONUS` (50): Preference for models proven by behavioral probe to emit native tool_calls.
+     - `CONTENT_TOOL_PROBE_BONUS` (20): Preference for models emitting valid tool JSON in content fallback.
+     - `PROBE_LATENCY_MAX_BONUS` (30): Latency responsiveness bonus scaled down by probe roundtrip time.
+     - `TOOL_CAPABILITY_BONUS` (40): Declarative bonus when /api/show advertises 'tools' capability for agent/coding intent.
+     - `INSERT_CAPABILITY_BONUS` (10): Declarative bonus when /api/show advertises 'insert' (FIM completion) capability for coding intent.
+     - `THINKING_CAPABILITY_BONUS` (40): Declarative bonus when /api/show advertises 'thinking' capability for reasoning intent.
+     - `MEASURED_TPS_TIEBREAKER_WEIGHT` (0.05): Small scaling factor for measured tokens/sec to break ties without overpowering reliability.
+   - Non-generative embedding-only models (`capabilities: ['embedding']` without `'completion'`) are strictly excluded from chat and agent candidate pools.
+   - In Agent mode, candidates failing behavioral probe are never auto-selected. Pinned models are preserved when no ranking data differentiates candidates.
+
+10. **Real Extension Host Integration (`test/integration/suite/smokeRealHost.test.ts`)**:
+   - Executes inside real VS Code Electron environment via `@vscode/test-electron`.
+   - Verifies real `openTextDocument`, `applyEdit`, `save()`, UTF-8 BOM, and CRLF line ending preservation on disk.
+   - Proves modal warning cancellation preserves disk files without modification.
+
 ---
 
 ## 9. Known Limitations
@@ -375,8 +435,9 @@ Phase 7 transformed all Phase 5.5 and Phase 6 autonomous capabilities into unifi
 
 ## 10. Verification & Test Metrics
 
-- **Total Unit Tests**: 361 passing across 41 test suites (0 failures, 0 pending, 5.0s)
-- **Real Integration Tier**: 23 passing, 3 pending (offline mode), 26 passing (online mode)
+- **Total Unit Tests**: **559 passing** across 56 test suites (0 failures, 0 pending)
+- **Real Integration Tier**: **34 passing** across 9 test suites
+- **Real Extension Host Tier**: **6 passing** in real VS Code Electron extension host (`@vscode/test-electron`)
 - **Compilation**: `tsc -p ./` (0 errors), `tsc -p ./tsconfig.test.json` (0 errors)
 - **Prepublish Build**: `npm run vscode:prepublish` (0 errors)
 - **Git Hygiene**: `git diff --check` (0 errors), zero commits created.

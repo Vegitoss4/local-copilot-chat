@@ -41,6 +41,22 @@ export class ExtensionLogger {
     ExtensionLogger._instance = undefined;
   }
 
+  public static log(message: string): void {
+    ExtensionLogger.getInstance().info(message);
+  }
+
+  public static info(message: string, context?: LogContext): void {
+    ExtensionLogger.getInstance().info(message, context);
+  }
+
+  public static warn(message: string, context?: LogContext): void {
+    ExtensionLogger.getInstance().warn(message, context);
+  }
+
+  public static error(message: string | Error, context?: LogContext): void {
+    ExtensionLogger.getInstance().error(message, context);
+  }
+
   public setOutputChannel(channel: vscode.OutputChannel): void {
     this._outputChannel = channel;
   }

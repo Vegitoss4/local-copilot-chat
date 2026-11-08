@@ -1,0 +1,44 @@
+[
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "auth_choice",
+    "askAttempts": 1,
+    "askAllowed": true,
+    "escapeHatchFired": false
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "db_creds",
+    "askAttempts": 1,
+    "askAllowed": true,
+    "escapeHatchFired": false
+  },
+  {
+    "model": "qwen2.5-coder:7b",
+    "promptId": "priority_type",
+    "askAttempts": 1,
+    "askAllowed": true,
+    "escapeHatchFired": false
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "auth_choice",
+    "askAttempts": 1,
+    "askAllowed": true,
+    "escapeHatchFired": false
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "db_creds",
+    "askAttempts": 0,
+    "askAllowed": false,
+    "escapeHatchFired": false
+  },
+  {
+    "model": "qwen3.5:9b",
+    "promptId": "priority_type",
+    "askAttempts": 0,
+    "askAllowed": false,
+    "escapeHatchFired": false
+  }
+]

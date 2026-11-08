@@ -9,11 +9,13 @@ import { SwarmOrchestrator } from './swarmOrchestrator';
 import { ConfigurationService } from './configurationService';
 import { AtomicFileWriter } from './atomicFileWriter';
 import { ModelLifecycleManager } from './modelLifecycleManager';
+import { CalibrationWizard } from './calibrationWizard';
 import { ExtensionLogger } from './extensionLogger';
 import { WorkspaceManager } from './workspaceManager';
 import { AutonomousDebuggerService } from './autonomousDebuggerService';
 import { EvaluationService } from './evaluationService';
 import { PathSecurity } from './pathSecurity';
+import { ModelRouter } from './modelRouter';
 
 /**
  * Deliverable 11.0: SessionEngine Extraction
@@ -209,21 +211,16 @@ export class SessionEngine {
   }
 
   public resolveAutoModel(text: string, mode: SessionMode): string {
-    const lower = text.toLowerCase();
-    const hasCodeIntent = /\b(code|function|fix|refactor|debug|implement|class|test|script|ts|js|py)\b/.test(lower);
-    const hasMathLogicIntent = /\b(why|explain|reason|think|proof|compare|analyze|evaluate)\b/.test(lower);
-
-    if (mode === 'agent' || mode === 'plan' || hasCodeIntent) {
-      const coderModel = this._cachedModels.find(m => m.toLowerCase().includes('coder'));
-      return coderModel || this._cachedModels[0] || 'qwen2.5-coder:7b';
-    }
-
-    if (hasMathLogicIntent) {
-      const reasoningModel = this._cachedModels.find(m => m.toLowerCase().includes('r1') || m.toLowerCase().includes('deepseek'));
-      return reasoningModel || this._cachedModels[0] || 'deepseek-r1:8b';
-    }
-
-    return this._cachedModels[0] || 'qwen2.5-coder:7b';
+    const decision = ModelRouter.classifyIntent(
+      text,
+      mode === 'agent' ? 'agent' : 'chat',
+      this._cachedModels,
+      undefined,
+      undefined,
+      undefined,
+      this._model
+    );
+    return decision.model || this._model || this._cachedModels[0] || '';
   }
 
   private _getHistoryFileUri(targetRootUri?: vscode.Uri): vscode.Uri | null {
@@ -638,6 +635,34 @@ export class SessionEngine {
         }
       }
 
+      case '/tune': {
+        const targetModel = rest.trim() || resolvedModel;
+        this._events.onToken?.(`### 🎛️ Model Calibration Wizard\nStarting calibration on \`${targetModel}\`...\n\n`);
+        const calibRes = await CalibrationWizard.calibrateModel(targetModel, {
+          ollamaService: this._ollamaService,
+          onProgress: p => {
+            this._events.onToken?.(`> [${p.progressPercent}%] ${p.message}\n`);
+          },
+          baseDir: sessionRootUri?.fsPath
+        });
+
+        if (!calibRes.success) {
+          return `\n❌ **Calibration Failed**: ${calibRes.errorMessage}`;
+        }
+
+        const profile = calibRes.profile!;
+        return (
+          `\n✅ **Calibration Complete for \`${targetModel}\`**\n\n` +
+          `| Metric | Calibrated Value |\n` +
+          `|---|---|\n` +
+          `| **Steady-State Throughput** | ${profile.measuredTps} tok/s |\n` +
+          `| **Cold Load / Swap Cost** | ${profile.swapCostMs}ms |\n` +
+          `| **Tool Call Reliability** | ${Math.round(profile.toolCallReliability * 100)}% |\n` +
+          `| **Profile Location** | \`${calibRes.profilePath || 'Workspace disk'}\` |\n\n` +
+          `> Model profile saved. The swap-cost aware ModelRouter can now use this profile for intelligent routing.`
+        );
+      }
+
       case '/help': {
         return (
           '### 🤖 Local Copilot Commands\n\n' +
@@ -645,6 +670,7 @@ export class SessionEngine {
           '- `/diff`: Show active git diff.\n' +
           '- `/build`: Run project build check.\n' +
           '- `/fix <issue>`: Autonomous debugging and error diagnosis.\n' +
+          '- `/tune [model]`: Calibrate local model throughput, swap latency, and tool reliability.\n' +
           '- `/search <query>`: Fast symbol and text search.\n' +
           '- `/read <path>`: View workspace file content.\n' +
           '- `/commit`: Review changed files and commit proposal.\n' +

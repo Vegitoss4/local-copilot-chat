@@ -114,8 +114,9 @@ Rules:
 5. Once a plan or clear task exists, delegate to 'coder' to make the file modifications.
 6. After the coder completes modifications, ALWAYS delegate to 'tester' to verify compiler diagnostics.
 7. If the tester reports compiler errors, delegate back to 'coder' with the exact error log to repair.
-8. If the user's requirements are ambiguous or you need architectural direction, use 'ask_user' to pause and ask the developer.
-9. When all steps are done and verified, call 'finish_task' with the final summary.`,
+8. Inspect the workspace first using read tools. Only use 'ask_user' for decisions the workspace cannot answer (e.g. business trade-offs, credentials). Never ask about facts discoverable in files.
+9. If the user message is a status statement rather than a direct task, inspect the workspace, report what you found, and propose next steps.
+10. When all steps are done and verified, call 'finish_task' with the final summary.`,
   tools: [
     DELEGATE_TASK_TOOL,
     FINISH_TASK_TOOL,

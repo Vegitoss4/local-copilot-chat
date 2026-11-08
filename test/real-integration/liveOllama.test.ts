@@ -100,8 +100,14 @@ describe('Phase 8.2: Real-World Live Ollama Daemon & VRAM Verification Tier', fu
       assert.strictEqual(unloaded, true, `Failed to unload ${m.name}`);
     }
 
-    // Verify /api/ps reports VRAM is released
-    const residentAfter = await service.getLoadedModels();
+    // Verify /api/ps reports VRAM is released (allow up to 2s for async runner teardown)
+    let residentAfter = await service.getLoadedModels();
+    const start = Date.now();
+    while (residentAfter.length > 0 && Date.now() - start < 2000) {
+      await new Promise((r) => setTimeout(r, 100));
+      residentAfter = await service.getLoadedModels();
+    }
+
     assert.strictEqual(
       residentAfter.length,
       0,

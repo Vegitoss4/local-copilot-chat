@@ -1,0 +1,269 @@
+{
+  "metadata": {
+    "endpoint": "http://127.0.0.1:11434",
+    "numCtx": 8192,
+    "temp": 0.1,
+    "seed": 42,
+    "smi": "NVIDIA GeForce RTX 3070, 8192 MiB, 617.14",
+    "invalidationNotice": {
+      "status": "INVALID_WRITE_AND_OUTCOME_METRICS",
+      "reason": "All write/outcome metrics (fencesRemoved, idTypesAligned, propertyNamesAligned, portsAligned, dotnetBuildExitZero, taskOutcome, turnsToFirstWrite) are INVALID due to two test harness defects: (1) unbridged openTextDocument throwing Cannot open document for disk paths, and (2) save() in the mock text document bridge writing an immutable closure copy that overwrote applied edits. Usable metrics: first-turn ask rate and exploration tool call counts remain valid because planning and clarification decisions precede file writes and do not depend on document persistence."
+    }
+  },
+  "summaryTable": [
+    {
+      "Model": "qwen2.5-coder:7b",
+      "Condition": "Baseline (No Discovery / Gate OFF)",
+      "First-Turn Ask Rate": "0% (0/5)",
+      "Clarification-Allowed Rate": "0/0 (N/A)",
+      "Mean Turns to Write": "None",
+      "Outcome Pass Rate": "0% (0/5)"
+    },
+    {
+      "Model": "qwen2.5-coder:7b",
+      "Condition": "After (Discovery ON / Gate ON)",
+      "First-Turn Ask Rate": "20% (1/5)",
+      "Clarification-Allowed Rate": "200%",
+      "Mean Turns to Write": "None",
+      "Outcome Pass Rate": "0% (0/5)"
+    },
+    {
+      "Model": "qwen3.5:9b",
+      "Condition": "Baseline (No Discovery / Gate OFF)",
+      "First-Turn Ask Rate": "0% (0/5)",
+      "Clarification-Allowed Rate": "0/0 (N/A)",
+      "Mean Turns to Write": "1.0",
+      "Outcome Pass Rate": "0% (0/5)"
+    },
+    {
+      "Model": "qwen3.5:9b",
+      "Condition": "After (Discovery ON / Gate ON)",
+      "First-Turn Ask Rate": "0% (0/5)",
+      "Clarification-Allowed Rate": "0/0 (N/A)",
+      "Mean Turns to Write": "1.0",
+      "Outcome Pass Rate": "0% (0/5)"
+    }
+  ],
+  "rawRuns": [
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 1,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 2,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 3,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 4,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 5,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 1,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 2,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 3,
+      "firstTurnAsk": true,
+      "questionsAttempted": 1,
+      "questionsAllowed": 2,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 4,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 5,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 1,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 2,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 3,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": 1,
+      "outcomePass": false,
+      "outcomeReason": "dotnet build failed with exitCode 1:   Determining projects to restore...\r\n  Restored C:\\Users\\Sagar\\AppData\\Local\\Temp\\bench-qwen3_5_9b-3-DfUOv1\\Backend.Api\\Backend.Api.csproj (in 80 ms)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 4,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": 1,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "Baseline (No Discovery / Gate OFF)",
+      "run": 5,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 1,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 2,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 3,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": null,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 4,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": 1,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "condition": "After (Discovery ON / Gate ON)",
+      "run": 5,
+      "firstTurnAsk": false,
+      "questionsAttempted": 0,
+      "questionsAllowed": 0,
+      "firstWriteTurn": 1,
+      "outcomePass": false,
+      "outcomeReason": "TaskItemsController.cs still contains stray markdown fences (```)"
+    }
+  ]
+}

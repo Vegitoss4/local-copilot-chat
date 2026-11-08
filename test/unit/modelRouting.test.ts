@@ -7,7 +7,22 @@ describe('Model Routing & Auto-Selection Baseline', () => {
   const ollamaService = new OllamaService('http://127.0.0.1:11434');
   const availableModels = ['deepseek-r1:8b', 'qwen2.5-coder:7b', 'qwen3.5:9b'];
 
-  it('should route reasoning and diagnostic keywords to DeepSeek-R1 in chat mode', () => {
+  beforeEach(() => {
+    (ollamaService as any)._capabilityCache.set('deepseek-r1:8b', {
+      result: { model: 'deepseek-r1:8b', hasTools: false, capabilities: ['thinking', 'completion'], status: 'supported' },
+      timestamp: Date.now()
+    });
+    (ollamaService as any)._capabilityCache.set('qwen2.5-coder:7b', {
+      result: { model: 'qwen2.5-coder:7b', hasTools: true, capabilities: ['tools', 'insert', 'completion'], status: 'supported' },
+      timestamp: Date.now()
+    });
+    (ollamaService as any)._capabilityCache.set('qwen3.5:9b', {
+      result: { model: 'qwen3.5:9b', hasTools: true, capabilities: ['thinking', 'tools', 'completion', 'vision'], status: 'supported' },
+      timestamp: Date.now()
+    });
+  });
+
+  it('should route reasoning and diagnostic keywords based on thinking capability in chat mode', () => {
     const provider = new ChatViewProvider(vscodeMock.Uri.file('C:/extension'), ollamaService);
     // Inject cached models
     (provider as any)._cachedModels = availableModels;
@@ -32,7 +47,7 @@ describe('Model Routing & Auto-Selection Baseline', () => {
     }
   });
 
-  it('should route syntax and coding requests to Qwen 2.5 Coder in chat mode', () => {
+  it('should route syntax and coding requests based on tools and insert capability in chat mode', () => {
     const provider = new ChatViewProvider(vscodeMock.Uri.file('C:/extension'), ollamaService);
     (provider as any)._cachedModels = availableModels;
 
@@ -53,7 +68,7 @@ describe('Model Routing & Auto-Selection Baseline', () => {
     }
   });
 
-  it('should unconditionally route to reasoning model in agent mode', () => {
+  it('should route to tool-capable model in agent mode', () => {
     const provider = new ChatViewProvider(vscodeMock.Uri.file('C:/extension'), ollamaService);
     (provider as any)._cachedModels = availableModels;
 
@@ -67,8 +82,8 @@ describe('Model Routing & Auto-Selection Baseline', () => {
       const selected = provider.resolveAutoModel(prompt, 'agent');
       assert.strictEqual(
         selected,
-        'deepseek-r1:8b',
-        `Expected agent mode prompt "${prompt}" to route to deepseek-r1:8b`
+        'qwen2.5-coder:7b',
+        `Expected agent mode prompt "${prompt}" to route to verified tool-capable model`
       );
     }
   });

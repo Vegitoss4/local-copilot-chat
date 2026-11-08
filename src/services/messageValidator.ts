@@ -28,6 +28,9 @@ export class MessageValidator {
     'copyToClipboard',
     'runCommand',
     'clearChat',
+    'applyCodeBlock',
+    'switchModeAndRun',
+    'enableEmbeddedFallback',
   ]);
 
   /**
@@ -98,6 +101,53 @@ export class MessageValidator {
           throw new MessageValidationError("'createFile' requires string 'code'.");
         }
         return { type, payload: { fileName: raw.fileName.trim(), code: raw.code } };
+      }
+
+      case 'applyCodeBlock': {
+        if (typeof raw.messageId !== 'string' || !raw.messageId.trim()) {
+          throw new MessageValidationError("'applyCodeBlock' requires non-empty string 'messageId'.");
+        }
+        if (typeof raw.blockIndex !== 'number' || !Number.isInteger(raw.blockIndex) || raw.blockIndex < 0) {
+          throw new MessageValidationError("'applyCodeBlock' requires non-negative integer 'blockIndex'.");
+        }
+        return {
+          type,
+          payload: {
+            messageId: raw.messageId.trim(),
+            blockIndex: raw.blockIndex,
+          },
+        };
+      }
+
+      case 'switchModeAndRun': {
+        if (raw.targetMode !== 'agent' && raw.targetMode !== 'chat') {
+          throw new MessageValidationError("'switchModeAndRun' requires targetMode 'agent' or 'chat'.");
+        }
+        return {
+          type,
+          payload: {
+            targetMode: raw.targetMode,
+            prompt: typeof raw.prompt === 'string' ? raw.prompt : undefined,
+          },
+        };
+      }
+
+      case 'enableEmbeddedFallback': {
+        const allowedKeys = new Set(['type', 'model']);
+        for (const k of Object.keys(raw)) {
+          if (!allowedKeys.has(k)) {
+            throw new MessageValidationError(`Unexpected field '${k}' in enableEmbeddedFallback.`);
+          }
+        }
+        if (raw.model !== undefined && typeof raw.model !== 'string') {
+          throw new MessageValidationError("'enableEmbeddedFallback' requires string 'model' if present.");
+        }
+        return {
+          type,
+          payload: {
+            model: typeof raw.model === 'string' ? raw.model.trim() : undefined,
+          },
+        };
       }
 
       case 'copyToClipboard': {

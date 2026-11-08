@@ -5,6 +5,11 @@ import { CommandClassifier, CommandTier } from './commandClassifier';
 import { PathSecurity } from './pathSecurity';
 import { MemoryService } from './memoryService';
 import { AtomicFileWriter } from './atomicFileWriter';
+import { StructuredEditFallback } from './structuredEditFallback';
+import { WorkspaceDiscoveryService, WorkspaceDiscoveryResult } from './workspaceDiscoveryService';
+import { ExploreBeforeAskGate } from './exploreBeforeAskGate';
+import { ConfigurationService } from './configurationService';
+import { ExtensionLogger } from './extensionLogger';
 import {
   AgentRole,
   IAgentDefinition,
@@ -87,6 +92,9 @@ export class SwarmOrchestrator {
   private pendingUserAnswerResolver?: (answer: string) => void;
   private orchestratorHistory: ChatMessage[] = [];
   private lastDelegationCallId: string | null = null;
+  private discoveryResult?: WorkspaceDiscoveryResult;
+  private exploreGate?: ExploreBeforeAskGate;
+  private textClarificationRetryCount = 0;
 
   constructor(ollamaService: OllamaService, options: SwarmOptions) {
     this.ollamaService = ollamaService;
@@ -212,10 +220,43 @@ export class SwarmOrchestrator {
 
     await this.saveWhiteboardToDisk();
 
+    const config = ConfigurationService.getInstance();
+    let discoveryResult: WorkspaceDiscoveryResult | undefined;
+    if (config.enableWorkspaceDiscoveryPreStep) {
+      callbacks.onStatusUpdate?.('Scanning workspace structure and manifests...');
+      discoveryResult = await WorkspaceDiscoveryService.discover(this.workspaceRootUri, {
+        numCtx: this.numCtx,
+        signal,
+      });
+      this.discoveryResult = discoveryResult;
+    }
+
+    let modelHasTools = true;
+    try {
+      const caps = await this.ollamaService.getModelCapabilities(this.userModel);
+      modelHasTools = caps.hasTools;
+    } catch {}
+
+    const generationId = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    this.exploreGate = new ExploreBeforeAskGate({
+      minExplorationBeforeAsk: config.minExplorationBeforeAsk,
+      maxClarificationQuestionsPerTask: config.maxClarificationQuestionsPerTask,
+      hasRelevantFiles: discoveryResult ? discoveryResult.hasRelevantFiles : true,
+      hasToolSupport: modelHasTools,
+      discoveryResult,
+      generationId,
+    });
+    this.textClarificationRetryCount = 0;
+
+    let initialUserContent = `Primary User Objective:\n${userGoal}`;
+    if (discoveryResult) {
+      initialUserContent += `\n\n${discoveryResult.rawText}`;
+    }
+
     this.currentAgentRole = 'orchestrator';
     this.orchestratorHistory = [
       { role: 'system', content: this.buildOrchestratorPrompt() },
-      { role: 'user', content: `Primary User Objective:\n${userGoal}` }
+      { role: 'user', content: initialUserContent }
     ];
 
     let turns = 0;
@@ -279,9 +320,55 @@ export class SwarmOrchestrator {
         // Handle tool calls from Orchestrator
         const toolCalls = responseMsg.tool_calls || [];
         if (toolCalls.length === 0) {
+          // Check if response contains structured-edit fallback blocks
+          if (responseMsg.content && (responseMsg.content.includes('FILE:') || responseMsg.content.includes('DELETE_FILE:'))) {
+            const parseResult = StructuredEditFallback.parseBlocks(responseMsg.content, this.workspaceRootUri);
+            if (parseResult.valid && parseResult.operations.length > 0) {
+              callbacks.onStatusUpdate?.('Applying structured edits...');
+              const editRes = await StructuredEditFallback.applyStructuredEdits(parseResult, this.workspaceRootUri);
+              if (editRes.success) {
+                finalAnswer = `Structured edits successfully applied to ${editRes.appliedOperations} file(s).`;
+                isTaskFinished = true;
+                break;
+              } else {
+                this.orchestratorHistory.push({
+                  role: 'user',
+                  content: `Structured edit failed: ${editRes.error}. Please retry with corrected SEARCH/REPLACE blocks.`,
+                });
+                continue;
+              }
+            }
+          }
+
           // If no tools were called, check if Orchestrator directly gave the final answer
           if (responseMsg.content && !responseMsg.content.includes('<tool_call>')) {
-            finalAnswer = responseMsg.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+            const rawAnswer = responseMsg.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
+            // Statement vs Task / Action-or-Evidence Requirement:
+            // If the turn ends solely with a clarification request while relevant files exist in the workspace,
+            // retry once with an explicit instruction to inspect first, then surface honestly.
+            const isClarificationQuestion =
+              /\?(\s*)$/.test(rawAnswer) ||
+              /(?:please\s+(?:provide|clarify|specify)|which\s+(?:framework|backend|frontend)|what\s+(?:aspects|framework|do you mean))/i.test(rawAnswer);
+
+            if (isClarificationQuestion && this.discoveryResult?.hasRelevantFiles && this.textClarificationRetryCount < 1) {
+              this.textClarificationRetryCount++;
+              ExtensionLogger.warn(`[SwarmOrchestrator] Turn ended with ungrounded text clarification question. Forcing inspection retry.`);
+              callbacks.onProgress?.({
+                icon: '🔄',
+                message: 'Clarification requested before workspace inspection. Retrying with directive to explore first...',
+                agentRole: 'orchestrator',
+                agentName: orchDef.name,
+                agentColor: orchDef.color,
+              });
+              this.orchestratorHistory.push({
+                role: 'user',
+                content: `Do not ask clarification questions yet. Inspect the workspace first using list_dir, view_file_range, or search_workspace, and propose next steps based on what you find.`
+              });
+              continue;
+            }
+
+            finalAnswer = rawAnswer;
             isTaskFinished = true;
             break;
           }
@@ -373,6 +460,33 @@ export class SwarmOrchestrator {
             break;
           } else if (toolName === 'ask_user') {
             const question = args.question || 'Please provide clarification.';
+
+            // Explore-Before-Ask Gate Check
+            if (this.exploreGate) {
+              const gateRes = this.exploreGate.evaluateAskUser(question);
+              if (!gateRes.allowed) {
+                callbacks.onProgress?.({
+                  icon: '🛡️',
+                  message: `Explore gate rejected early clarification: Inspect workspace first.`,
+                  agentRole: 'orchestrator',
+                  agentName: orchDef.name,
+                  agentColor: orchDef.color,
+                });
+                this.orchestratorHistory.push({
+                  role: 'tool',
+                  name: 'ask_user',
+                  content: `Gate Rejection: ${gateRes.reason}`
+                });
+                callbacks.onToolEnd?.({
+                  toolCallId: callId,
+                  name: 'ask_user',
+                  success: false,
+                  output: gateRes.reason || 'Rejection: Inspect workspace first.'
+                });
+                continue;
+              }
+            }
+
             callbacks.onProgress?.({
               icon: '❓',
               message: `Orchestrator paused to ask user: "${question.slice(0, 60)}..."`,
@@ -404,6 +518,9 @@ export class SwarmOrchestrator {
           } else {
             // Read-only tools available to Orchestrator (view_file_range, search_workspace, list_dir)
             const result = await this.dispatchBaseTool(toolName, args, callId, callbacks, 'orchestrator');
+            if (this.exploreGate) {
+              this.exploreGate.recordToolCall(toolName, args, result.success);
+            }
             this.orchestratorHistory.push({
               role: 'tool',
               name: toolName,
@@ -531,6 +648,20 @@ export class SwarmOrchestrator {
 
       const toolCalls = subResponse.tool_calls || [];
       if (toolCalls.length === 0) {
+        // Check for structured-edit fallback blocks
+        if (subResponse.content && (subResponse.content.includes('FILE:') || subResponse.content.includes('DELETE_FILE:'))) {
+          const parseResult = StructuredEditFallback.parseBlocks(subResponse.content, this.workspaceRootUri);
+          if (parseResult.valid && parseResult.operations.length > 0) {
+            callbacks.onStatusUpdate?.(`Applying structured edits from ${subDef.name}...`);
+            const editRes = await StructuredEditFallback.applyStructuredEdits(parseResult, this.workspaceRootUri);
+            if (editRes.success) {
+              return {
+                status: 'success',
+                summary: `Applied structured edits to ${editRes.appliedOperations} file(s).`,
+              };
+            }
+          }
+        }
         // Sub-agent responded without tool call - treat text as completion
         const cleanContent = subResponse.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
         return {
@@ -584,6 +715,9 @@ export class SwarmOrchestrator {
 
         // Standard tool execution for sub-agent
         const result = await this.dispatchBaseTool(toolName, args, callId, callbacks, subDef.role);
+        if (this.exploreGate) {
+          this.exploreGate.recordToolCall(toolName, args, result.success);
+        }
 
         // Record modified file if coder edited code and index into vector memory
         if (subDef.role === 'coder' && (toolName === 'str_replace' || toolName === 'create_file' || toolName === 'apply_patch')) {
@@ -895,6 +1029,8 @@ export class SwarmOrchestrator {
     return `${orchDef.systemPrompt}\n\n` +
       `Workspace Awareness:\n` +
       `- You have a shared memory bus (Whiteboard).\n` +
+      `- Ground your decisions in the workspace discovery facts provided.\n` +
+      `- If the user's message is not a clear task or is a status statement, inspect the workspace, report what you found, and propose next steps.\n` +
       `- When delegating to sub-agents, provide clear, bite-sized tasks.\n` +
       `- Always delegate verification to 'tester' after code is modified.\n` +
       `- When done, call finish_task with the final summary.`;
@@ -905,6 +1041,10 @@ export class SwarmOrchestrator {
 
     if (contextFiles && contextFiles.length > 0) {
       prompt += `Relevant Workspace Files:\n${contextFiles.map(f => `- ${f}`).join('\n')}\n\n`;
+    }
+
+    if (this.discoveryResult && this.discoveryResult.detectedStacks.length > 0) {
+      prompt += `Workspace Tech Stacks: ${this.discoveryResult.detectedStacks.join(', ')}\n\n`;
     }
 
     if (this.whiteboard.executionPlan) {

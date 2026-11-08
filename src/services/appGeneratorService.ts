@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { OllamaService } from './ollamaService';
 import { AgentToolService } from './agentToolService';
 import { WorkspaceManager } from './workspaceManager';
+import { stripMarkdownFences, assertNoFenceLines } from './fenceSanitizer';
 
 export interface PlanStep {
   name: string;
@@ -340,7 +341,9 @@ export class ${entityName}ManagerComponent implements OnInit {
 
   private static async writeFile(fileUri: vscode.Uri, content: string): Promise<void> {
     const secureUri = AgentToolService.resolveSecurePath(fileUri.toString(), { allowNewFile: true }).uri;
+    const { sanitized } = stripMarkdownFences(content, secureUri.fsPath);
+    assertNoFenceLines(sanitized, secureUri.fsPath);
     const encoder = new TextEncoder();
-    await vscode.workspace.fs.writeFile(secureUri, encoder.encode(content));
+    await vscode.workspace.fs.writeFile(secureUri, encoder.encode(sanitized));
   }
 }

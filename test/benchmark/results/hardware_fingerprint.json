@@ -1,0 +1,36 @@
+{
+  "rawCommandOutputs": {
+    "nvidiaSmi": "NVIDIA GeForce RTX 3070, 617.14, 8192, 6896",
+    "ollamaVersion": "ollama version is 0.40.7"
+  },
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 3070",
+    "driverVersion": "617.14",
+    "totalVramMB": 8192,
+    "freeVramMB": 6896
+  },
+  "cpu": {
+    "model": "AMD Ryzen 5 3600 6-Core Processor",
+    "cores": 12,
+    "arch": "x64"
+  },
+  "ram": {
+    "totalBytes": 34280333312,
+    "totalGB": "31.93",
+    "freeBytes": 18914942976,
+    "freeGB": "17.62"
+  },
+  "os": {
+    "platform": "win32",
+    "release": "10.0.26300",
+    "type": "Windows_NT",
+    "version": "Windows 11 Pro"
+  },
+  "ollama": {
+    "versionString": "ollama version is 0.40.7"
+  },
+  "node": {
+    "version": "v26.13.0"
+  },
+  "capturedAt": "2026-11-07T19:09:37.724Z"
+}

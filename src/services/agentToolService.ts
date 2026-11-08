@@ -7,6 +7,7 @@ import { OllamaService } from './ollamaService';
 import { CommandClassifier, CommandTier } from './commandClassifier';
 import { ExecutableResolver } from './executableResolver';
 import { GitExecutionIsolator } from './gitExecutionIsolator';
+import { stripMarkdownFences, assertNoFenceLines } from './fenceSanitizer';
 
 export interface ToolDefinition {
   type: 'function';
@@ -464,13 +465,34 @@ export class AgentToolService {
         };
       }
 
-      // Determine VS Code document range
-      const startPos = document.positionAt(firstIndex);
-      const endPos = document.positionAt(firstIndex + normalizedOld.length);
-      const range = new vscode.Range(startPos, endPos);
+      // Determine VS Code document range using line/character coordinates
+      // This ensures 100% accuracy across CRLF (\r\n), LF (\n), and UTF-8 BOM files
+      const prefix = normalizedDoc.slice(0, firstIndex);
+      const prefixLines = prefix.split('\n');
+      const startLine = prefixLines.length - 1;
+      const startCol = prefixLines[prefixLines.length - 1].length;
+
+      const targetLines = normalizedOld.split('\n');
+      const endLine = startLine + targetLines.length - 1;
+      const endCol = targetLines.length === 1
+        ? startCol + targetLines[0].length
+        : targetLines[targetLines.length - 1].length;
+
+      const range = new vscode.Range(
+        new vscode.Position(startLine, startCol),
+        new vscode.Position(endLine, endCol)
+      );
+
+      // Preserve document line endings (CRLF vs LF)
+      let replacementText = newStr;
+      if (fullText.includes('\r\n') && !replacementText.includes('\r\n')) {
+        replacementText = replacementText.replace(/\r?\n/g, '\r\n');
+      } else if (!fullText.includes('\r\n') && replacementText.includes('\r\n')) {
+        replacementText = replacementText.replace(/\r\n/g, '\n');
+      }
 
       const edit = new vscode.WorkspaceEdit();
-      edit.replace(fileUri, range, newStr);
+      edit.replace(fileUri, range, replacementText);
 
       const applied = await vscode.workspace.applyEdit(edit);
       if (!applied) {
@@ -485,7 +507,7 @@ export class AgentToolService {
 
       return {
         success: true,
-        output: `Successfully replaced code in ${filePath} at lines ${startPos.line + 1}-${endPos.line + 1}.`,
+        output: `Successfully replaced code in ${filePath} at lines ${startLine + 1}-${endLine + 1}.`,
         diagnostics: diagnostics || undefined
       };
     } catch (err: any) {
@@ -498,8 +520,10 @@ export class AgentToolService {
    */
   public static async createFile(filePath: string, content: string): Promise<{ success: boolean; output: string; diagnostics?: string }> {
     try {
+      const { sanitized, warning } = stripMarkdownFences(content, filePath);
+      assertNoFenceLines(sanitized, filePath);
       const fileUri = this.getFileUri(filePath);
-      const data = new TextEncoder().encode(content);
+      const data = new TextEncoder().encode(sanitized);
       await vscode.workspace.fs.writeFile(fileUri, data);
 
       // Post-write verification (detection only, non-destructive audit)

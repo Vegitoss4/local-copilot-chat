@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import { PathSecurity, WorkspaceSecurityError } from './pathSecurity';
 import { AtomicFileWriter } from './atomicFileWriter';
 import { WorkspaceManager } from './workspaceManager';
+import { stripMarkdownFences, assertNoFenceLines } from './fenceSanitizer';
 
 export interface FilePatchOperation {
   filePath: string;
@@ -175,7 +176,9 @@ export class CodeGenerationEngine {
           if (op.content === undefined) {
             throw new Error(`Create operation for "${op.filePath}" missing content`);
           }
-          const buffer = new TextEncoder().encode(op.content);
+          const { sanitized } = stripMarkdownFences(op.content, op.filePath);
+          assertNoFenceLines(sanitized, op.filePath);
+          const buffer = new TextEncoder().encode(sanitized);
           await vscode.workspace.fs.writeFile(validated.uri, buffer);
           snap.lastWrittenHash = this._hash(buffer);
           if (!modifiedFiles.includes(normPath)) modifiedFiles.push(normPath);
@@ -185,7 +188,9 @@ export class CodeGenerationEngine {
           if (!modifiedFiles.includes(normPath)) modifiedFiles.push(normPath);
         } else if (op.type === 'modify') {
           if (op.content !== undefined) {
-            const buffer = new TextEncoder().encode(op.content);
+            const { sanitized } = stripMarkdownFences(op.content, op.filePath);
+            assertNoFenceLines(sanitized, op.filePath);
+            const buffer = new TextEncoder().encode(sanitized);
             await vscode.workspace.fs.writeFile(validated.uri, buffer);
             snap.lastWrittenHash = this._hash(buffer);
             if (!modifiedFiles.includes(normPath)) modifiedFiles.push(normPath);

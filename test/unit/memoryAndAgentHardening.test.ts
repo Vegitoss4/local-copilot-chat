@@ -358,7 +358,7 @@ describe('Phase 3 & 4: Agent Quality, Evidence Verification & Memory Hardening S
       }
     });
 
-    it('should extract raw JSON tool calls when model outputs JSON without markdown fences', async () => {
+    it('should extract raw JSON tool calls when model outputs JSON without markdown fences as the entire message', async () => {
       const ollama = new OllamaService('http://127.0.0.1:11434');
       const originalFetch = global.fetch;
 
@@ -369,12 +369,24 @@ describe('Phase 3 & 4: Agent Quality, Evidence Verification & Memory Hardening S
           json: async () => ({
             message: {
               role: 'assistant',
-              content: 'I will create the file now:\n{"name": "create_file", "arguments": {"filePath": "test.txt", "content": "hello"}}\nPlease review.',
+              content: '{"name": "create_file", "arguments": {"filePath": "test.txt", "content": "hello"}}',
             },
           }),
         } as any);
 
-        const res = await ollama.chatWithTools('qwen2.5-coder:7b', [], []);
+        const res = await ollama.chatWithTools(
+          'qwen2.5-coder:7b',
+          [],
+          [],
+          undefined,
+          undefined,
+          undefined,
+          {
+            enableEmbeddedFallback: true,
+            isEmbeddedCapableModel: true,
+            allowedToolNames: ['create_file'],
+          }
+        );
         assert.ok(res.tool_calls);
         assert.strictEqual(res.tool_calls.length, 1);
         assert.strictEqual(res.tool_calls[0].function.name, 'create_file');

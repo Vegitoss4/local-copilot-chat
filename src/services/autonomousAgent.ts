@@ -3,6 +3,9 @@ import { OllamaService, ChatMessage } from './ollamaService';
 import { AgentToolService, ToolCall, ToolResult } from './agentToolService';
 import { CommandClassifier, CommandTier } from './commandClassifier';
 import { PathSecurity } from './pathSecurity';
+import { WorkspaceDiscoveryService, WorkspaceDiscoveryResult } from './workspaceDiscoveryService';
+import { ExploreBeforeAskGate } from './exploreBeforeAskGate';
+import { ConfigurationService } from './configurationService';
 
 export interface ApprovalRequest {
   id: string;
@@ -53,6 +56,8 @@ export class AutonomousAgent {
   private availableModels: string[];
   private _sessionRootUri?: vscode.Uri;
   private pendingUserAnswerResolver?: (answer: string) => void;
+  private discoveryResult?: WorkspaceDiscoveryResult;
+  private exploreGate?: ExploreBeforeAskGate;
 
   constructor(ollamaService: OllamaService, options: AgentOptions) {
     this.ollamaService = ollamaService;
@@ -104,10 +109,42 @@ export class AutonomousAgent {
       message: 'Agent initialized goal: ' + (userGoal.slice(0, 70) + (userGoal.length > 70 ? '...' : ''))
     });
 
+    const config = ConfigurationService.getInstance();
+    let discoveryResult: WorkspaceDiscoveryResult | undefined;
+    if (config.enableWorkspaceDiscoveryPreStep) {
+      callbacks.onStatusUpdate?.('Scanning workspace structure and manifests...');
+      discoveryResult = await WorkspaceDiscoveryService.discover(this._sessionRootUri, {
+        numCtx: this.numCtx,
+        signal,
+      });
+      this.discoveryResult = discoveryResult;
+    }
+
+    let modelHasTools = true;
+    try {
+      const caps = await this.ollamaService.getModelCapabilities(this.userModel);
+      modelHasTools = caps.hasTools;
+    } catch {}
+
+    const generationId = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    this.exploreGate = new ExploreBeforeAskGate({
+      minExplorationBeforeAsk: config.minExplorationBeforeAsk,
+      maxClarificationQuestionsPerTask: config.maxClarificationQuestionsPerTask,
+      hasRelevantFiles: discoveryResult ? discoveryResult.hasRelevantFiles : true,
+      hasToolSupport: modelHasTools,
+      discoveryResult,
+      generationId,
+    });
+
+    let effectiveUserGoal = userGoal;
+    if (discoveryResult) {
+      effectiveUserGoal += `\n\n${discoveryResult.rawText}`;
+    }
+
     const systemPrompt = this.buildSystemPrompt();
     this.messageHistory = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userGoal }
+      { role: 'user', content: effectiveUserGoal }
     ];
 
     // ==========================================
@@ -235,6 +272,30 @@ export class AutonomousAgent {
         // --- SPECIAL HANDLING: ask_user (Pause & Clarify) ---
         if (toolName === 'ask_user') {
           const questionText = args.question || 'Please provide clarification.';
+
+          if (this.exploreGate) {
+            const gateRes = this.exploreGate.evaluateAskUser(questionText);
+            if (!gateRes.allowed) {
+              callbacks.onProgress?.({
+                icon: '🛡️',
+                message: 'Explore gate rejected early clarification: Inspect workspace first.'
+              });
+              const askResult: ToolResult = {
+                toolCallId: callId,
+                name: toolName,
+                success: false,
+                output: gateRes.reason || 'Rejection: Inspect workspace first.'
+              };
+              callbacks.onToolEnd?.(askResult);
+              this.messageHistory.push({
+                role: 'tool',
+                name: toolName,
+                content: `Gate Rejection: ${gateRes.reason}`
+              });
+              continue;
+            }
+          }
+
           callbacks.onStatusUpdate?.(`Waiting for user input: "${questionText}"`);
           callbacks.onProgress?.({
             icon: '❓',
@@ -403,6 +464,9 @@ export class AutonomousAgent {
 
         // Execute the tool
         const result = await this.dispatchToolExecution(toolName, args, callId);
+        if (this.exploreGate) {
+          this.exploreGate.recordToolCall(toolName, args, result.success);
+        }
         callbacks.onToolEnd?.(result);
 
         // Append tool result into context
@@ -616,8 +680,10 @@ You have direct read, search, surgical modification, question-asking, and comman
    - If an error alert is returned (e.g. CS1002, TS2304), your NEXT priority is to view the problematic line and apply a surgical fix.
    - Use get_diagnostics or execute_command ("dotnet build" / "npm run build") to verify your fixes.
 
-3. ASK USER WHEN AMBIGUOUS:
-   - If requirements are unclear, or multiple architectural paths exist (e.g. "Do you prefer standalone or module-based Angular?"), invoke ask_user to pause and clarify before making permanent changes.
+3. EXPLORE BEFORE ASKING:
+   - Always inspect the workspace first using read/search tools.
+   - Only invoke ask_user for decisions the workspace cannot answer (e.g. business trade-offs, credentials). Never ask about facts discoverable in files.
+   - If the user input is a status statement rather than a clear task, inspect the workspace, report findings, and propose next steps.
 
 4. EXPLORE BEFORE ASSUMING:
    - Use search_workspace or list_dir to find existing models, services, and project manifests before creating duplicates.

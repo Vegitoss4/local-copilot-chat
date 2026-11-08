@@ -104,6 +104,24 @@ export class EvaluationService {
     }
 
     /**
+     * Specialized multi-file workspace discovery and explore-before-ask benchmark task.
+     */
+    public getMultiFileDiscoveryBenchmarkTasks(): BenchmarkTask[] {
+        return [
+            {
+                id: 'multi-file-workspace-discovery-explore',
+                name: 'Multi-File Workspace Discovery & Explore-Before-Ask',
+                category: 'tool_use',
+                prompt: 'Given a workspace with Backend.Api (.csproj) and Frontend.Client (package.json with @angular/core), inspect the project structure and list the missing files instead of asking for clarification on which backend framework is used.',
+                expectedOutputs: {
+                    mustContain: ['Backend.Api', 'Frontend.Client'],
+                    mustNotContain: ['what backend framework', 'which backend']
+                }
+            }
+        ];
+    }
+
+    /**
      * Comprehensive 30-task benchmark corpus for local 7B-9B LLMs.
      */
     public getCorpus30Tasks(): BenchmarkTask[] {

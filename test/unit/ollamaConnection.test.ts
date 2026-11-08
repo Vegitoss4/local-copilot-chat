@@ -228,19 +228,28 @@ describe('Ollama Connection Reliability Suite', () => {
       const service = new OllamaService('http://127.0.0.1:11434');
       const provider = new ChatViewProvider(MockUri.file('C:/ext') as any, service);
 
+      (service as any)._capabilityCache.set('qwen2.5-coder:7b', {
+        result: { model: 'qwen2.5-coder:7b', hasTools: true, capabilities: ['tools', 'insert', 'completion'], status: 'supported' },
+        timestamp: Date.now()
+      });
+      (service as any)._capabilityCache.set('deepseek-r1:8b', {
+        result: { model: 'deepseek-r1:8b', hasTools: false, capabilities: ['thinking', 'completion'], status: 'supported' },
+        timestamp: Date.now()
+      });
+
       (provider as any)._cachedModels = ['qwen2.5-coder:7b', 'deepseek-r1:8b'];
 
-      // Reasoning keywords should route to DeepSeek
+      // Reasoning keywords should route to model with thinking capability
       const reasonModel = provider.resolveAutoModel('Can you explain why this code is failing?', 'chat');
       assert.strictEqual(reasonModel, 'deepseek-r1:8b');
 
-      // Coding keywords should route to Qwen
+      // Coding keywords should route to model with tools/insert capability
       const codeModel = provider.resolveAutoModel('Write a function to format currency', 'chat');
       assert.strictEqual(codeModel, 'qwen2.5-coder:7b');
 
-      // Agent mode always defaults to reasoning/orchestrator model
+      // Agent mode routes to tool-capable coding model rather than non-tool reasoning model
       const agentModel = provider.resolveAutoModel('Task', 'agent');
-      assert.strictEqual(agentModel, 'deepseek-r1:8b');
+      assert.strictEqual(agentModel, 'qwen2.5-coder:7b');
     });
   });
 });

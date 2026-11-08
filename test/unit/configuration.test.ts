@@ -44,6 +44,17 @@ describe('Deliverable A3: Runtime Configuration Settings Suite', () => {
         modelUnloadPolicy: 'keepAlive',
         modelKeepAliveDuration: '5m',
         idleUnloadTimeout: 180000,
+        warnOnCpuOffload: true,
+        routerEnabled: false,
+        benchmarkRepetitions: 3,
+        enableStructuredEditFallback: true,
+        suggestAgentModeOnEditIntent: true,
+        minExplorationBeforeAsk: 3,
+        maxClarificationQuestionsPerTask: 2,
+        enableWorkspaceDiscoveryPreStep: true,
+        streamToolCalls: true,
+        enableEmbeddedToolCallFallback: false,
+        headersTimeout: 45000,
       });
     });
   });

@@ -440,6 +440,27 @@ export const vscodeMock = {
             return mockState.configuration.get(key);
           }
           return defaultValue;
+        },
+        inspect(key: string) {
+          const fullKey = section ? `${section}.${key}` : key;
+          const val = mockState.configuration.get(fullKey) ?? mockState.configuration.get(key);
+          return {
+            key: fullKey,
+            defaultValue: undefined,
+            globalValue: val,
+            workspaceValue: undefined,
+            workspaceFolderValue: undefined
+          };
+        },
+        async update(key: string, value: any, target?: any) {
+          const fullKey = section ? `${section}.${key}` : key;
+          mockState.configuration.set(fullKey, value);
+          const event = {
+            affectsConfiguration: (sec: string) => sec === fullKey || sec === section || fullKey.startsWith(sec)
+          };
+          for (const listener of mockState.configChangeListeners) {
+            listener(event);
+          }
         }
       };
     },

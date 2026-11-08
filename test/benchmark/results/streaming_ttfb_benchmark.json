@@ -1,0 +1,189 @@
+{
+  "benchmark": "Streaming vs Non-Streaming TTFB and Total Duration",
+  "timestamp": "2026-11-07T19:25:35.498Z",
+  "prompt": "Explain the difference between interface and abstract class in TypeScript in three short bullet points.",
+  "numPredict": 64,
+  "temperature": 0.1,
+  "runs": [
+    {
+      "iteration": 1,
+      "model": "qwen2.5-coder:7b",
+      "mode": "streaming",
+      "headerTimeMs": 29,
+      "ttfbMs": 29,
+      "totalDurationMs": 823,
+      "chunkCount": 65,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 793861000,
+        "prompt_eval_count": 46,
+        "prompt_eval_duration": 21428000
+      }
+    },
+    {
+      "iteration": 1,
+      "model": "qwen2.5-coder:7b",
+      "mode": "non-streaming",
+      "headerTimeMs": 810,
+      "ttfbMs": 810,
+      "totalDurationMs": 810,
+      "chunkCount": 1,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 785356000,
+        "prompt_eval_count": 46,
+        "prompt_eval_duration": 13353000
+      }
+    },
+    {
+      "iteration": 2,
+      "model": "qwen2.5-coder:7b",
+      "mode": "non-streaming",
+      "headerTimeMs": 809,
+      "ttfbMs": 810,
+      "totalDurationMs": 810,
+      "chunkCount": 1,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 785184000,
+        "prompt_eval_count": 46,
+        "prompt_eval_duration": 12881000
+      }
+    },
+    {
+      "iteration": 2,
+      "model": "qwen2.5-coder:7b",
+      "mode": "streaming",
+      "headerTimeMs": 25,
+      "ttfbMs": 25,
+      "totalDurationMs": 810,
+      "chunkCount": 65,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 784892000,
+        "prompt_eval_count": 46,
+        "prompt_eval_duration": 12901000
+      }
+    },
+    {
+      "iteration": 3,
+      "model": "qwen2.5-coder:7b",
+      "mode": "streaming",
+      "headerTimeMs": 25,
+      "ttfbMs": 25,
+      "totalDurationMs": 812,
+      "chunkCount": 65,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 786454000,
+        "prompt_eval_count": 46,
+        "prompt_eval_duration": 12789000
+      }
+    },
+    {
+      "iteration": 3,
+      "model": "qwen2.5-coder:7b",
+      "mode": "non-streaming",
+      "headerTimeMs": 821,
+      "ttfbMs": 821,
+      "totalDurationMs": 821,
+      "chunkCount": 1,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 795141000,
+        "prompt_eval_count": 46,
+        "prompt_eval_duration": 13096000
+      }
+    },
+    {
+      "iteration": 1,
+      "model": "qwen3.5:9b",
+      "mode": "streaming",
+      "headerTimeMs": 155,
+      "ttfbMs": 155,
+      "totalDurationMs": 1306,
+      "chunkCount": 52,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 1150867000,
+        "prompt_eval_count": 27,
+        "prompt_eval_duration": 118163000
+      }
+    },
+    {
+      "iteration": 1,
+      "model": "qwen3.5:9b",
+      "mode": "non-streaming",
+      "headerTimeMs": 1223,
+      "ttfbMs": 1224,
+      "totalDurationMs": 1224,
+      "chunkCount": 1,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 1128920000,
+        "prompt_eval_count": 27,
+        "prompt_eval_duration": 55723000
+      }
+    },
+    {
+      "iteration": 2,
+      "model": "qwen3.5:9b",
+      "mode": "non-streaming",
+      "headerTimeMs": 1213,
+      "ttfbMs": 1213,
+      "totalDurationMs": 1213,
+      "chunkCount": 1,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 1126036000,
+        "prompt_eval_count": 27,
+        "prompt_eval_duration": 51506000
+      }
+    },
+    {
+      "iteration": 2,
+      "model": "qwen3.5:9b",
+      "mode": "streaming",
+      "headerTimeMs": 61,
+      "ttfbMs": 62,
+      "totalDurationMs": 1196,
+      "chunkCount": 52,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 1134970000,
+        "prompt_eval_count": 27,
+        "prompt_eval_duration": 53256000
+      }
+    },
+    {
+      "iteration": 3,
+      "model": "qwen3.5:9b",
+      "mode": "streaming",
+      "headerTimeMs": 61,
+      "ttfbMs": 61,
+      "totalDurationMs": 1186,
+      "chunkCount": 52,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 1124373000,
+        "prompt_eval_count": 27,
+        "prompt_eval_duration": 52514000
+      }
+    },
+    {
+      "iteration": 3,
+      "model": "qwen3.5:9b",
+      "mode": "non-streaming",
+      "headerTimeMs": 1191,
+      "ttfbMs": 1191,
+      "totalDurationMs": 1191,
+      "chunkCount": 1,
+      "metadata": {
+        "eval_count": 64,
+        "eval_duration": 1129422000,
+        "prompt_eval_count": 27,
+        "prompt_eval_duration": 53196000
+      }
+    }
+  ]
+}

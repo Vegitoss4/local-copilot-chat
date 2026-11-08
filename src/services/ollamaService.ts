@@ -1,4 +1,5 @@
 import { ToolDefinition } from './agentToolService';
+import { ExtensionLogger } from './extensionLogger';
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -44,6 +45,20 @@ export interface OllamaTimeoutOptions {
   totalTimeoutMs?: number;
 }
 
+export interface ToolChatProgress {
+  phase: 'connecting' | 'thinking' | 'streaming';
+  elapsedMs: number;
+  partialContent: string;
+}
+
+export interface ToolChatOptions {
+  stream?: boolean; // default true
+  enableEmbeddedFallback?: boolean; // default false
+  isEmbeddedCapableModel?: boolean; // default false
+  allowedToolNames?: string[];
+  onProgress?: (progress: ToolChatProgress) => void;
+}
+
 export class OllamaTimeoutError extends Error {
   constructor(
     public readonly phase: 'connect' | 'headers' | 'idle_stream' | 'total',
@@ -67,6 +82,71 @@ export class OllamaVramError extends Error {
     );
     this.name = 'OllamaVramError';
   }
+}
+
+export interface OllamaDiagnosticSnapshot {
+  errorName: string;
+  errorMessage: string;
+  causeCode?: string;
+  causeMessage?: string;
+  endpoint: string;
+  model: string;
+  numCtx?: number;
+  elapsedMs: number;
+  promptSizeBytes?: number;
+  isHttpError: boolean;
+  httpStatus?: number;
+  httpBody?: string;
+  genId?: string;
+  psSnapshot?: string[];
+  tagsSnapshot?: string[];
+}
+
+export class OllamaConnectionError extends Error {
+  public readonly diagnostics: OllamaDiagnosticSnapshot;
+
+  constructor(diagnostics: OllamaDiagnosticSnapshot) {
+    let msg: string;
+    if (diagnostics.isHttpError) {
+      msg = `Ollama HTTP Error (${diagnostics.httpStatus}): ${diagnostics.httpBody || 'Server returned non-2xx status.'}`;
+    } else if (diagnostics.causeCode === 'ECONNREFUSED') {
+      msg = `Unable to connect to Ollama at ${diagnostics.endpoint} (Connection Refused). Please ensure Ollama is running ('ollama serve') and accessible.`;
+    } else if (diagnostics.causeCode === 'ETIMEDOUT' || diagnostics.causeCode === 'UND_ERR_CONNECT_TIMEOUT') {
+      msg = `Connection to Ollama at ${diagnostics.endpoint} timed out after ${diagnostics.elapsedMs}ms.`;
+    } else {
+      msg = `Ollama communication failed: ${diagnostics.errorMessage || 'No response received'}${diagnostics.causeCode ? ` (${diagnostics.causeCode})` : ''} at ${diagnostics.endpoint}.`;
+    }
+    super(msg);
+    this.name = 'OllamaConnectionError';
+    this.diagnostics = diagnostics;
+  }
+}
+
+export interface ModelCapabilityResult {
+  model: string;
+  hasTools: boolean;
+  capabilities: string[];
+  status: 'supported' | 'unsupported' | 'unknown';
+  template?: string;
+}
+
+export interface ModelProbeResult {
+  model: string;
+  supported: boolean;
+  emittedNativeCalls: boolean;
+  emittedContentCalls: boolean;
+  latencyMs: number;
+  error?: string;
+  probedAt: number;
+}
+
+function redactAndCap(text: string, maxLen: number = 512): string {
+  if (!text) return '';
+  return text
+    .replace(/(bearer\s+)[a-zA-Z0-9_\-\.]+/gi, '$1[REDACTED]')
+    .replace(/(api[_-]?key[:=]\s*)[a-zA-Z0-9_\-\.]+/gi, '$1[REDACTED]')
+    .replace(/(password[:=]\s*)[^\s&]+/gi, '$1[REDACTED]')
+    .slice(0, maxLen);
 }
 
 export function isVramAllocationError(errorMessage: string): boolean {
@@ -97,6 +177,137 @@ export class OllamaService {
 
   public getEndpoint(): string {
     return this.endpoint;
+  }
+
+  private _capabilityCache: Map<string, { result: ModelCapabilityResult; timestamp: number }> = new Map();
+  private static readonly CAPABILITY_CACHE_TTL_MS = 60000;
+
+  public clearCapabilityCache(): void {
+    this._capabilityCache.clear();
+  }
+
+  public getCapabilityCache(): Map<string, ModelCapabilityResult> {
+    const map = new Map<string, ModelCapabilityResult>();
+    for (const [k, v] of this._capabilityCache.entries()) {
+      map.set(k, v.result);
+    }
+    return map;
+  }
+
+  /**
+   * Queries /api/show for model capabilities.
+   * Derives tool support strictly from capabilities array.
+   * Zero hardcoded model names.
+   */
+  public async getModelCapabilities(model: string, timeoutMs: number = 5000): Promise<ModelCapabilityResult> {
+    const cached = this._capabilityCache.get(model);
+    if (cached && Date.now() - cached.timestamp < OllamaService.CAPABILITY_CACHE_TTL_MS) {
+      return cached.result;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(`${this.endpoint}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        return {
+          model,
+          hasTools: false,
+          capabilities: [],
+          status: 'unknown',
+        };
+      }
+
+      const data = (await response.json()) as { capabilities?: string[]; template?: string };
+      const capabilities = Array.isArray(data.capabilities) ? data.capabilities : [];
+      const hasTools = capabilities.includes('tools');
+
+      const result: ModelCapabilityResult = {
+        model,
+        hasTools,
+        capabilities,
+        status: capabilities.length === 0 ? 'unknown' : (hasTools ? 'supported' : 'unsupported'),
+        template: data.template,
+      };
+
+      this._capabilityCache.set(model, { result, timestamp: Date.now() });
+      return result;
+    } catch {
+      return {
+        model,
+        hasTools: false,
+        capabilities: [],
+        status: 'unknown',
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Retrieves installed models from /api/tags that declare tool-calling capability.
+   */
+  public async getModelsWithTools(timeoutMs: number = 5000): Promise<string[]> {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const response = await fetch(`${this.endpoint}/api/tags`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!response.ok) return [];
+      const data = (await response.json()) as { models?: Array<{ name: string; capabilities?: string[] }> };
+      if (!data.models || !Array.isArray(data.models)) return [];
+
+      const toolsModels: string[] = [];
+      for (const m of data.models) {
+        if (m.capabilities && Array.isArray(m.capabilities) && m.capabilities.includes('tools')) {
+          toolsModels.push(m.name);
+        }
+      }
+      return toolsModels;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Captures quick snapshot of /api/ps and /api/tags for failure diagnostics.
+   */
+  public async takeDiagnosticSnapshot(): Promise<{ ps: string[]; tags: string[] }> {
+    const ps: string[] = [];
+    const tags: string[] = [];
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1000);
+      const psRes = await fetch(`${this.endpoint}/api/ps`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (psRes.ok) {
+        const psData = (await psRes.json()) as { models?: Array<{ name: string }> };
+        if (psData?.models) ps.push(...psData.models.map(m => m.name));
+      }
+    } catch {}
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1000);
+      const tagsRes = await fetch(`${this.endpoint}/api/tags`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (tagsRes.ok) {
+        const tagsData = (await tagsRes.json()) as { models?: Array<{ name: string }> };
+        if (tagsData?.models) tags.push(...tagsData.models.map(m => m.name));
+      }
+    } catch {}
+    return { ps, tags };
   }
 
   public async ping(timeoutMs: number = 2000): Promise<boolean> {
@@ -249,6 +460,9 @@ export class OllamaService {
       }, connectTimeoutMs);
     }
 
+    const startTime = Date.now();
+    let payloadLength = 0;
+
     try {
       const payload: Record<string, any> = {
         model,
@@ -259,6 +473,7 @@ export class OllamaService {
       if (options.keep_alive !== undefined) {
         payload.keep_alive = options.keep_alive;
       }
+      payloadLength = JSON.stringify(payload).length;
 
       const response = await fetch(`${this.endpoint}/api/chat`, {
         method: 'POST',
@@ -282,7 +497,19 @@ export class OllamaService {
         if (isVramAllocationError(errorText)) {
           throw new OllamaVramError(model, errorText);
         }
-        throw new Error(`Ollama error (${response.status}): ${errorText || response.statusText}`);
+        const redacted = redactAndCap(errorText || response.statusText);
+        throw new OllamaConnectionError({
+          errorName: 'OllamaHttpError',
+          errorMessage: `Ollama error (${response.status}): ${redacted}`,
+          endpoint: this.endpoint,
+          model,
+          numCtx: options.num_ctx,
+          elapsedMs: Date.now() - startTime,
+          promptSizeBytes: payloadLength,
+          isHttpError: true,
+          httpStatus: response.status,
+          httpBody: redacted,
+        });
       }
 
       if (!response.body) {
@@ -426,6 +653,38 @@ export class OllamaService {
           );
         }
       }
+      if (err instanceof OllamaTimeoutError || err instanceof OllamaVramError || err.name === 'AbortError') {
+        throw err;
+      }
+      if (err instanceof OllamaConnectionError) {
+        throw err;
+      }
+
+      const elapsedMs = Date.now() - startTime;
+      const isFetchFailed =
+        err.message === 'fetch failed' ||
+        err.code === 'ECONNREFUSED' ||
+        err.cause?.code === 'ECONNREFUSED' ||
+        err.cause?.code === 'ETIMEDOUT' ||
+        err.cause?.code === 'UND_ERR_CONNECT_TIMEOUT';
+
+      if (isFetchFailed || err.name === 'TypeError') {
+        const snapshot = await this.takeDiagnosticSnapshot();
+        throw new OllamaConnectionError({
+          errorName: err.name || 'ConnectionError',
+          errorMessage: err.message,
+          causeCode: err.cause?.code || err.code,
+          causeMessage: err.cause?.message,
+          endpoint: this.endpoint,
+          model,
+          numCtx: options.num_ctx,
+          elapsedMs,
+          promptSizeBytes: payloadLength,
+          isHttpError: false,
+          psSnapshot: snapshot.ps,
+          tagsSnapshot: snapshot.tags,
+        });
+      }
       throw err;
     } finally {
       if (signal) {
@@ -439,7 +698,10 @@ export class OllamaService {
   }
 
   /**
-   * Tool Calling invocation (uses native Ollama tools parameter + text fallback extraction)
+   * Tool Calling invocation:
+   * Streams tool calls by default (stream: true) with progressive token buffering,
+   * idle inactivity resets on every chunk, and thinking indicator callbacks.
+   * Keeps non-streaming (stream: false) behind setting / options as fallback.
    */
   public async chatWithTools(
     model: string,
@@ -447,12 +709,16 @@ export class OllamaService {
     tools: ToolDefinition[],
     signal?: AbortSignal,
     options: Record<string, any> = { num_ctx: 16384, temperature: 0.1 },
-    timeouts?: OllamaTimeoutOptions
+    timeouts?: OllamaTimeoutOptions,
+    toolOptions?: ToolChatOptions
   ): Promise<ChatMessage> {
+    const shouldStream = toolOptions?.stream ?? true;
+    const connectTimeoutMs = timeouts?.connectTimeoutMs;
     const headersTimeoutMs = timeouts?.headersTimeoutMs ?? 45000;
-    const totalTimeoutMs = timeouts?.totalTimeoutMs ?? 120000;
+    const idleStreamTimeoutMs = timeouts?.idleStreamTimeoutMs ?? 30000;
+    const totalTimeoutMs = timeouts?.totalTimeoutMs ?? 300000;
 
-    let timedOutPhase: 'headers' | 'total' | null = null;
+    let timedOutPhase: 'connect' | 'headers' | 'idle_stream' | 'total' | null = null;
     const internalController = new AbortController();
 
     const onParentAbort = () => {
@@ -466,7 +732,9 @@ export class OllamaService {
       signal.addEventListener('abort', onParentAbort, { once: true });
     }
 
+    let connectTimer: NodeJS.Timeout | undefined;
     let headersTimer: NodeJS.Timeout | undefined;
+    let idleTimer: NodeJS.Timeout | undefined;
     let totalTimer: NodeJS.Timeout | undefined;
 
     if (totalTimeoutMs > 0 && totalTimeoutMs < Infinity) {
@@ -483,17 +751,38 @@ export class OllamaService {
       }, headersTimeoutMs);
     }
 
+    if (connectTimeoutMs && connectTimeoutMs > 0 && connectTimeoutMs < Infinity) {
+      connectTimer = setTimeout(() => {
+        timedOutPhase = 'connect';
+        internalController.abort();
+      }, connectTimeoutMs);
+    }
+
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (idleStreamTimeoutMs > 0 && idleStreamTimeoutMs < Infinity) {
+        idleTimer = setTimeout(() => {
+          timedOutPhase = 'idle_stream';
+          internalController.abort();
+        }, idleStreamTimeoutMs);
+      }
+    };
+
+    const startTime = Date.now();
+    let payloadLength = 0;
+
     try {
       const payload: Record<string, any> = {
         model,
         messages: this.cleanMessagesForOllama(messages),
         tools: tools.length > 0 ? tools : undefined,
-        stream: false,
+        stream: shouldStream,
         options,
       };
       if (options.keep_alive !== undefined) {
         payload.keep_alive = options.keep_alive;
       }
+      payloadLength = JSON.stringify(payload).length;
 
       const response = await fetch(`${this.endpoint}/api/chat`, {
         method: 'POST',
@@ -501,6 +790,11 @@ export class OllamaService {
         body: JSON.stringify(payload),
         signal: internalController.signal,
       });
+
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = undefined;
+      }
 
       if (headersTimer) {
         clearTimeout(headersTimer);
@@ -512,9 +806,116 @@ export class OllamaService {
         if (isVramAllocationError(errorText)) {
           throw new OllamaVramError(model, errorText);
         }
-        throw new Error(`Ollama Tool Call Error (${response.status}): ${errorText || response.statusText}`);
+        const redacted = redactAndCap(errorText || response.statusText);
+        throw new OllamaConnectionError({
+          errorName: 'OllamaHttpError',
+          errorMessage: `Ollama Tool Call Error (${response.status}): ${redacted}`,
+          endpoint: this.endpoint,
+          model,
+          numCtx: options.num_ctx,
+          elapsedMs: Date.now() - startTime,
+          promptSizeBytes: payloadLength,
+          isHttpError: true,
+          httpStatus: response.status,
+          httpBody: redacted,
+        });
       }
 
+      // STREAMING EXECUTION PATH (Default)
+      if (shouldStream && response.body && typeof (response.body as any).getReader === 'function') {
+        resetIdleTimer();
+        let accumulatedContent = '';
+        const accumulatedToolCalls: Array<{ id?: string; function: { name: string; arguments: Record<string, any> } }> = [];
+
+        if (!response.body) {
+          throw new Error('Response body is null or undefined.');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            resetIdleTimer();
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+
+              try {
+                const chunk = JSON.parse(trimmed);
+                if (chunk.message?.content) {
+                  accumulatedContent += chunk.message.content;
+                  const elapsedMs = Date.now() - startTime;
+                  const hasOpenThink = accumulatedContent.includes('<think>') && !accumulatedContent.includes('</think>');
+                  toolOptions?.onProgress?.({
+                    phase: hasOpenThink ? 'thinking' : 'streaming',
+                    elapsedMs,
+                    partialContent: accumulatedContent
+                  });
+                }
+
+                if (chunk.message?.tool_calls && Array.isArray(chunk.message.tool_calls)) {
+                  for (const tc of chunk.message.tool_calls) {
+                    accumulatedToolCalls.push(tc);
+                  }
+                }
+              } catch {}
+            }
+          }
+        } finally {
+          reader.releaseLock();
+          if (idleTimer) clearTimeout(idleTimer);
+        }
+
+        // Process accumulated native tool calls
+        if (accumulatedToolCalls.length > 0) {
+          for (const call of accumulatedToolCalls) {
+            if (call.function && typeof call.function.arguments === 'string') {
+              try {
+                call.function.arguments = JSON.parse(call.function.arguments);
+              } catch {}
+            }
+          }
+          return {
+            role: 'assistant',
+            content: accumulatedContent,
+            tool_calls: accumulatedToolCalls
+          };
+        }
+
+        // Single unified embedded fallback path: fires strictly when native tool_calls are empty,
+        // setting is enabled, model is probed as embedded-capable, and message is exactly one JSON object.
+        const offeredToolNames = tools.map((t) => t.function?.name || (t as any).name).filter(Boolean);
+        const extractedCalls = OllamaService.extractEmbeddedToolCall(accumulatedContent, {
+          enableEmbeddedFallback: toolOptions?.enableEmbeddedFallback,
+          isEmbeddedCapableModel: toolOptions?.isEmbeddedCapableModel,
+          allowedToolNames: toolOptions?.allowedToolNames || offeredToolNames,
+          modelName: model,
+        });
+
+        if (extractedCalls.length === 1) {
+          return {
+            role: 'assistant',
+            content: accumulatedContent,
+            tool_calls: extractedCalls,
+          };
+        }
+
+        return {
+          role: 'assistant',
+          content: accumulatedContent
+        };
+      }
+
+      // NON-STREAMING FALLBACK PATH (stream: false)
       const data = (await response.json()) as OllamaChatResponse;
       const msg = data.message;
 
@@ -530,10 +931,17 @@ export class OllamaService {
         return msg;
       }
 
-      // Fallback: If local model emitted tool call inside raw content (e.g. ```json {"tool": ...} or <tool_call>)
-      const extractedCalls = this.extractToolCallsFromContent(msg.content);
-      if (extractedCalls.length > 0) {
-        msg.tool_calls = extractedCalls;
+      // Single unified embedded fallback path for non-streaming
+      const offeredToolNamesNonStream = tools.map((t) => t.function?.name || (t as any).name).filter(Boolean);
+      const extractedNonStream = OllamaService.extractEmbeddedToolCall(msg.content, {
+        enableEmbeddedFallback: toolOptions?.enableEmbeddedFallback,
+        isEmbeddedCapableModel: toolOptions?.isEmbeddedCapableModel,
+        allowedToolNames: toolOptions?.allowedToolNames || offeredToolNamesNonStream,
+        modelName: model,
+      });
+
+      if (extractedNonStream.length === 1) {
+        msg.tool_calls = extractedNonStream;
       }
 
       return msg;
@@ -544,11 +952,26 @@ export class OllamaService {
           abortErr.name = 'AbortError';
           throw abortErr;
         }
+        if (timedOutPhase === 'connect') {
+          const actualTimeout = connectTimeoutMs || 5000;
+          throw new OllamaTimeoutError(
+            'connect',
+            actualTimeout,
+            `Ollama connection timed out after ${actualTimeout}ms during initial handshake.`
+          );
+        }
         if (timedOutPhase === 'headers') {
           throw new OllamaTimeoutError(
             'headers',
             headersTimeoutMs,
-            `Ollama tool call response timed out after ${headersTimeoutMs}ms.`
+            `Ollama tool call response timed out waiting for headers after ${headersTimeoutMs}ms.`
+          );
+        }
+        if (timedOutPhase === 'idle_stream') {
+          throw new OllamaTimeoutError(
+            'idle_stream',
+            idleStreamTimeoutMs,
+            `Ollama stream stalled: no tokens received for ${idleStreamTimeoutMs}ms.`
           );
         }
         if (timedOutPhase === 'total') {
@@ -559,12 +982,46 @@ export class OllamaService {
           );
         }
       }
+      if (err instanceof OllamaTimeoutError || err instanceof OllamaVramError || err.name === 'AbortError') {
+        throw err;
+      }
+      if (err instanceof OllamaConnectionError) {
+        throw err;
+      }
+
+      const elapsedMs = Date.now() - startTime;
+      const isFetchFailed =
+        err.message === 'fetch failed' ||
+        err.code === 'ECONNREFUSED' ||
+        err.cause?.code === 'ECONNREFUSED' ||
+        err.cause?.code === 'ETIMEDOUT' ||
+        err.cause?.code === 'UND_ERR_CONNECT_TIMEOUT';
+
+      if (isFetchFailed || err.name === 'TypeError') {
+        const snapshot = await this.takeDiagnosticSnapshot();
+        throw new OllamaConnectionError({
+          errorName: err.name || 'ConnectionError',
+          errorMessage: err.message,
+          causeCode: err.cause?.code || err.code,
+          causeMessage: err.cause?.message,
+          endpoint: this.endpoint,
+          model,
+          numCtx: options.num_ctx,
+          elapsedMs,
+          promptSizeBytes: payloadLength,
+          isHttpError: false,
+          psSnapshot: snapshot.ps,
+          tagsSnapshot: snapshot.tags,
+        });
+      }
       throw err;
     } finally {
       if (signal) {
         signal.removeEventListener('abort', onParentAbort);
       }
+      if (connectTimer) clearTimeout(connectTimer);
       if (headersTimer) clearTimeout(headersTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       if (totalTimer) clearTimeout(totalTimer);
     }
   }
@@ -590,65 +1047,173 @@ export class OllamaService {
     }
   }
 
+  private static readonly probeCache = new Map<string, ModelProbeResult>();
+
   /**
-   * Resolves the specialized model for an agent persona:
-   * - Orchestrator & Planner: DeepSeek-R1 (or Qwen 3.5:9b) for architectural reasoning & thought
-   * - Coder & Tester: Qwen 2.5 Coder (or Qwen 3.5:9b) for precise tool-calling & syntax accuracy
+   * Clears the behavioral probe cache (for tests or after model pull/delete).
+   */
+  public static clearProbeCache(): void {
+    this.probeCache.clear();
+  }
+
+  /**
+   * Performs an active behavioral probe to verify whether a model actually emits valid tool calls
+   * when offered a tool schema. Bounded by a strict timeout (default 8000ms).
+   * Results are cached per model.
+   */
+  public async probeModelToolSupport(
+    model: string,
+    timeoutMs = 8000
+  ): Promise<ModelProbeResult> {
+    const cached = OllamaService.probeCache.get(model);
+    if (cached && Date.now() - cached.probedAt < 300000) {
+      return cached;
+    }
+
+    const startTime = Date.now();
+    const probeTool = {
+      type: 'function' as const,
+      function: {
+        name: 'echo_probe',
+        description: 'Echoes back the probe message to verify tool-calling capability',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            message: { type: 'string', description: 'Probe message' }
+          },
+          required: ['message']
+        }
+      }
+    };
+
+    try {
+      const response = await this.chatWithTools(
+        model,
+        [{ role: 'user', content: "Call the echo_probe tool with message 'ping'." }],
+        [probeTool],
+        undefined,
+        { num_ctx: 2048, temperature: 0.0 },
+        {
+          headersTimeoutMs: Math.min(timeoutMs, 6000),
+          totalTimeoutMs: timeoutMs,
+        }
+      );
+
+      const latencyMs = Date.now() - startTime;
+      const nativeCalls = (response.tool_calls || []).filter(
+        c => c.function?.name === 'echo_probe'
+      );
+      const contentCalls = OllamaService.extractEmbeddedToolCall(response.content || '', {
+        enableEmbeddedFallback: true,
+        isEmbeddedCapableModel: true,
+        allowedToolNames: ['echo_probe'],
+        modelName: model,
+      }).filter(c => c.function?.name === 'echo_probe');
+
+      const supported = nativeCalls.length > 0 || contentCalls.length > 0;
+      const result: ModelProbeResult = {
+        model,
+        supported,
+        emittedNativeCalls: nativeCalls.length > 0,
+        emittedContentCalls: contentCalls.length > 0,
+        latencyMs,
+        probedAt: Date.now(),
+      };
+
+      OllamaService.probeCache.set(model, result);
+      return result;
+    } catch (err: any) {
+      const latencyMs = Date.now() - startTime;
+      const result: ModelProbeResult = {
+        model,
+        supported: false,
+        emittedNativeCalls: false,
+        emittedContentCalls: false,
+        latencyMs,
+        error: err.message,
+        probedAt: Date.now(),
+      };
+      OllamaService.probeCache.set(model, result);
+      return result;
+    }
+  }
+
+  /**
+   * Resolves the specialized model for an agent persona dynamically:
+   * Selects tool-capable models for execution roles (coder, tester)
+   * without hardcoding model names.
    */
   public resolveModelForRole(
     role: 'orchestrator' | 'planner' | 'coder' | 'tester',
     userSelectedModel: string,
-    availableModels: string[]
+    availableModels: string[],
+    capabilitiesMap?: Map<string, ModelCapabilityResult>
   ): string {
-    const deepSeek = availableModels.find(m => m.toLowerCase().includes('deepseek-r1'));
-    const qwen35 = availableModels.find(m => m.toLowerCase().includes('qwen3.5'));
-    const qwenCoder = availableModels.find(m => m.toLowerCase().includes('qwen2.5-coder'));
-
-    if (availableModels.length === 1) {
-      return availableModels[0];
+    if (availableModels.length <= 1) {
+      return availableModels[0] || userSelectedModel;
     }
+
+    if (capabilitiesMap && capabilitiesMap.size > 0) {
+      const toolCapable = availableModels.filter(m => capabilitiesMap.get(m)?.hasTools);
+      const nonToolModels = availableModels.filter(m => !capabilitiesMap.get(m)?.hasTools);
+
+      if (role === 'orchestrator' || role === 'planner') {
+        if (nonToolModels.length > 0) return nonToolModels[0];
+        return userSelectedModel || availableModels[0];
+      }
+
+      // Coder and Tester need tool support
+      if (toolCapable.length > 0) {
+        if (toolCapable.includes(userSelectedModel)) return userSelectedModel;
+        return toolCapable[0];
+      }
+    }
+
+    // Role fallback when capabilitiesMap is not provided
+    const reasoningModel = availableModels.find(m => /deepseek|reason|r1/i.test(m));
+    const coderModel = availableModels.find(m => /coder|code/i.test(m));
 
     if (role === 'orchestrator' || role === 'planner') {
-      return deepSeek || qwen35 || userSelectedModel;
+      return reasoningModel || availableModels[0];
     }
-
-    // Coder and Tester
-    return qwenCoder || qwen35 || userSelectedModel;
+    return coderModel || availableModels[0];
   }
 
   /**
-   * Model orchestration helper:
-   * Selects reasoning model (e.g. deepseek-r1) or coder model (qwen3.5:9b / qwen2.5-coder)
+   * Model orchestration helper dynamically selecting execution model:
+   * Avoids hardcoded model strings; uses capability metadata and user choice.
    */
   public resolveModelForPhase(
     phase: 'planning' | 'execution',
     userSelectedModel: string,
-    availableModels: string[]
+    availableModels: string[],
+    capabilitiesMap?: Map<string, ModelCapabilityResult>
   ): string {
-    const deepSeek = availableModels.find(m => m.toLowerCase().includes('deepseek-r1'));
-    const qwen35 = availableModels.find(m => m.toLowerCase().includes('qwen3.5'));
-    const qwenCoder = availableModels.find(m => m.toLowerCase().includes('qwen2.5-coder'));
-
-    // If user explicitly selected qwen3.5:9b, respect user choice directly
-    if (userSelectedModel.toLowerCase().includes('qwen3.5')) {
-      return qwen35 || userSelectedModel;
+    if (availableModels.length <= 1) {
+      return availableModels[0] || userSelectedModel;
     }
 
-    // If user selected deepseek-r1:8b
-    if (userSelectedModel.toLowerCase().includes('deepseek-r1')) {
-      if (phase === 'planning') {
-        return deepSeek || userSelectedModel;
+    if (capabilitiesMap && capabilitiesMap.size > 0) {
+      const toolCapable = availableModels.filter(m => capabilitiesMap.get(m)?.hasTools);
+      const nonToolModels = availableModels.filter(m => !capabilitiesMap.get(m)?.hasTools);
+
+      if (phase === 'planning' && nonToolModels.length > 0) {
+        return nonToolModels.includes(userSelectedModel) ? userSelectedModel : nonToolModels[0];
       }
-      // For tool-calling execution phase, route to qwen3.5:9b or qwen2.5-coder:7b for precise JSON tool execution
-      return qwen35 || qwenCoder || userSelectedModel;
+
+      if (phase === 'execution' && toolCapable.length > 0) {
+        return toolCapable.includes(userSelectedModel) ? userSelectedModel : toolCapable[0];
+      }
     }
 
-    // If user selected qwen2.5-coder:7b, optionally use DeepSeek for initial architectural planning if available
-    if (phase === 'planning' && deepSeek) {
-      return deepSeek;
-    }
+    // Heuristic phase fallback when capabilitiesMap is not provided
+    const reasoningModel = availableModels.find(m => /deepseek|reason|r1/i.test(m));
+    const coderModel = availableModels.find(m => /coder|code/i.test(m));
 
-    return userSelectedModel;
+    if (phase === 'planning') {
+      return reasoningModel || availableModels[0];
+    }
+    return coderModel || availableModels[0];
   }
 
   private cleanMessagesForOllama(messages: ChatMessage[]): any[] {
@@ -662,68 +1227,142 @@ export class OllamaService {
   }
 
   /**
-   * Resilient fallback parser for models that output tool calls in XML or JSON markdown blocks
+   * Unified, secure fallback extractor for models that emit tool calls in content.
+   * STRICT CONDITIONS:
+   * 1. Setting `enableEmbeddedFallback` must be explicitly true.
+   * 2. Model must be flagged as embedded-capable via user-selected model probe (never Auto).
+   * 3. Native `tool_calls` must be empty.
+   * 4. Text must be outside <think> blocks and outside blockquotes/echoes.
+   * 5. The WHOLE assistant message (after trimming) must be EXACTLY one JSON object or ONE fenced JSON block.
+   *    Messages with prose mixed with JSON are rejected immediately.
+   * 6. Exactly one call.
+   * 7. Arguments validated against tool schema and role allowlist.
+   * 8. Fully logged.
    */
-  private extractToolCallsFromContent(content: string): Array<{ id?: string; function: { name: string; arguments: Record<string, any> } }> {
+  public static extractEmbeddedToolCall(
+    content: string,
+    options: {
+      enableEmbeddedFallback?: boolean;
+      isEmbeddedCapableModel?: boolean;
+      allowedToolNames?: string[];
+      modelName?: string;
+    }
+  ): Array<{ id?: string; function: { name: string; arguments: Record<string, any> } }> {
     const calls: Array<{ id?: string; function: { name: string; arguments: Record<string, any> } }> = [];
     if (!content) return calls;
 
-    // Pattern 1: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
-    const xmlRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
-    let match;
-    while ((match = xmlRegex.exec(content)) !== null) {
-      try {
-        const parsed = JSON.parse(match[1].trim());
-        if (parsed.name) {
-          calls.push({
-            id: 'call_' + Math.random().toString(36).slice(2, 9),
-            function: {
-              name: parsed.name,
-              arguments: parsed.arguments || parsed.parameters || {},
-            },
-          });
-        }
-      } catch {}
+    // Condition 1: Setting gate
+    if (!options.enableEmbeddedFallback) {
+      return calls;
     }
 
-    if (calls.length > 0) return calls;
-
-    // Pattern 2: ```json { "tool": "str_replace", "arguments": { ... } } ```
-    const codeBlockRegex = /```(?:json)?\s*\n?(\{[\s\S]*?"(?:name|tool)"\s*:\s*"[\s\S]*?\})\s*```/g;
-    while ((match = codeBlockRegex.exec(content)) !== null) {
-      try {
-        const parsed = JSON.parse(match[1].trim());
-        const toolName = parsed.name || parsed.tool;
-        if (toolName) {
-          calls.push({
-            id: 'call_' + Math.random().toString(36).slice(2, 9),
-            function: {
-              name: toolName,
-              arguments: parsed.arguments || parsed.parameters || {},
-            },
-          });
-        }
-      } catch {}
+    // Condition 2: Model flagged embedded-capable (only via probe, never in Auto)
+    if (!options.isEmbeddedCapableModel) {
+      return calls;
     }
 
-    if (calls.length > 0) return calls;
-
-    // Pattern 3: Raw JSON object matching tool definition without fences
-    const rawJsonRegex = /\{\s*"(?:name|tool)"\s*:\s*"([a-zA-Z0-9_]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
-    while ((match = rawJsonRegex.exec(content)) !== null) {
-      try {
-        const toolName = match[1];
-        const args = JSON.parse(match[2]);
-        calls.push({
-          id: 'call_' + Math.random().toString(36).slice(2, 9),
-          function: {
-            name: toolName,
-            arguments: args,
-          },
-        });
-      } catch {}
+    // Condition 4: Text outside <think> blocks and outside blockquotes
+    let cleaned = content;
+    const thinkEndIdx = cleaned.indexOf('</think>');
+    if (thinkEndIdx !== -1) {
+      cleaned = cleaned.slice(thinkEndIdx + 8).trim();
+    } else if (cleaned.includes('<think>')) {
+      // Model was interrupted while thinking; content inside unclosed <think> must not be executed
+      return calls;
     }
+
+    // Strip blockquotes (> ...) which indicate echoed tool output or quoted instructions
+    cleaned = cleaned.replace(/^>.*$/gm, '').trim();
+
+    if (!cleaned) return calls;
+
+    // Condition 5: The WHOLE assistant message (after trimming) is exactly one JSON object
+    // or one fenced JSON block that is the entire message.
+    let jsonCandidate = cleaned;
+    const fenceMatch = cleaned.match(/^```(?:json)?\s*[\r\n]?([\s\S]*?)[\r\n]?\s*```$/i);
+    const xmlMatch = cleaned.match(/^<tool_call>\s*([\s\S]*?)\s*<\/tool_call>$/i);
+    if (fenceMatch) {
+      jsonCandidate = fenceMatch[1].trim();
+    } else if (xmlMatch) {
+      jsonCandidate = xmlMatch[1].trim();
+    }
+
+    // Must start with { and end with }
+    if (!jsonCandidate.startsWith('{') || !jsonCandidate.endsWith('}')) {
+      // Contains prose before/after or is not a JSON object
+      return calls;
+    }
+
+    // Condition 6: Exactly one call (JSON.parse will fail if there are trailing tokens or multiple objects)
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonCandidate);
+    } catch {
+      // Malformed or truncated JSON
+      return calls;
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return calls;
+    }
+
+    // Condition 7: Arguments validated against schema and role allowlist
+    const toolName = parsed.name || parsed.function?.name || parsed.tool;
+    if (typeof toolName !== 'string' || !toolName.trim()) {
+      return calls;
+    }
+
+    const isAllowed = !options.allowedToolNames || options.allowedToolNames.length === 0
+      ? true
+      : options.allowedToolNames.includes(toolName);
+
+    if (!isAllowed) {
+      ExtensionLogger.warn(
+        `[ToolCalling] Rejected embedded tool call: "${toolName}" is not in offered/allowed tool list.`
+      );
+      return calls;
+    }
+
+    let rawArgs = parsed.arguments ?? parsed.parameters ?? parsed.function?.arguments ?? {};
+    if (typeof rawArgs === 'string') {
+      try {
+        rawArgs = JSON.parse(rawArgs);
+      } catch {
+        return calls;
+      }
+    }
+
+    if (typeof rawArgs !== 'object' || rawArgs === null || Array.isArray(rawArgs)) {
+      return calls;
+    }
+
+    // Condition 8: Logged
+    ExtensionLogger.info(
+      `[ToolCalling] Safely extracted 1 verified embedded tool call "${toolName}" for model "${options.modelName || 'probed'}".`
+    );
+
+    calls.push({
+      id: 'call_' + Math.random().toString(36).slice(2, 9),
+      function: {
+        name: toolName,
+        arguments: rawArgs,
+      },
+    });
 
     return calls;
+  }
+
+  /**
+   * Backwards-compatible alias for unit test migration.
+   */
+  public static extractToolCallsFromContent(
+    content: string,
+    allowedToolNames?: string[]
+  ): Array<{ id?: string; function: { name: string; arguments: Record<string, any> } }> {
+    return this.extractEmbeddedToolCall(content, {
+      enableEmbeddedFallback: true,
+      isEmbeddedCapableModel: true,
+      allowedToolNames,
+    });
   }
 }

@@ -66,17 +66,29 @@ Configure via VS Code Settings (`localCopilot.*`):
 - `localCopilot.ollamaEndpoint`: URL of the Ollama server (default `http://127.0.0.1:11434`).
 - `localCopilot.defaultModel`: Default model for chat and editing (default `qwen2.5-coder:7b`).
 - `localCopilot.temperature`: LLM sampling temperature (clamped $\le 0.1$ for tool use).
-- `localCopilot.numCtx`: Context window size (default `8192` for 8k models).
+- `localCopilot.numCtx`: Context window size (default `16384`).
 - `localCopilot.modelUnloadPolicy`: Model residency lifecycle policy (`keepAlive`, `unloadImmediately`, `unloadOnIdle`).
+- `localCopilot.agent.enableStructuredEditFallback`: Enable structured-edit fallback protocol (CREATE, SEARCH/REPLACE, DELETE_FILE) for models that lack native tool-calling support in Ollama (default `true`).
+- `localCopilot.agent.suggestAgentModeOnEditIntent`: Display a visible non-modal suggestion banner to switch to Agent Mode when edit intent is detected in Chat Mode (default `true`).
+- `localCopilot.agent.minExplorationBeforeAsk`: Minimum distinct read-only exploration calls required before `ask_user` gate permits clarification questions (default `3`).
+- `localCopilot.agent.maxClarificationQuestionsPerTask`: Maximum clarification questions permitted per agent task session (default `2`).
+- `localCopilot.agent.enableWorkspaceDiscoveryPreStep`: Run bounded deterministic workspace discovery (file tree, tech stacks, manifests, git status) before the first agent planning turn (default `true`).
+- `localCopilot.tools.stream`: Enable streaming tool calls for low Time-to-First-Byte (TTFB) responsiveness (~25-60ms) and progressive thinking progress (default `true`).
+- `localCopilot.tools.enableEmbeddedFallback`: Allow strict single-call embedded tool extraction fallback only for models probed as embedded-style when native tool calls are empty (default `false`, User-scoped only via application scope; requires host modal confirmation).
+- `localCopilot.timeouts.headersTimeoutMs`: Timeout in milliseconds for receiving HTTP response headers / first byte from Ollama (default `45000`, derived from cold model load + prompt eval + queue margin).
 
 ---
 
 ## Verification & Test Suite
 
-- **Unit Tests**: 453 passing across 46 suites (Mocha/Chai, 100% offline mocked VS Code extension host).
-- **Real Integration Tests**: 27 passing across 8 suites (3 pending when live Ollama daemon is offline; 30 passing when online).
-- **TypeScript Compilation**: Exit code 0 (strict mode).
+- **Unit Tests**: **559 passing** across 56 suites (Mocha/Chai, 100% offline mocked VS Code extension host).
+- **Real Integration Tests**: **34 passing** across 9 suites (validating real filesystem atomic writes, symlinks, junctions, timeouts, live Ollama, and fence sanitization).
+- **Real VS Code Extension Host Tests**: **6 passing** in real `@vscode/test-electron` host verifying `openTextDocument`, `applyEdit`, `document.save`, CRLF/BOM preservation, and modal approval rejection.
+- **TypeScript Compilation**: Exit code 0 (strict mode: `tsc -p ./` and `tsc -p ./tsconfig.test.json`).
 - **Prepublish Packaging**: Verified via `npm run vscode:prepublish`.
+
+> [!NOTE]
+> **Harness Metric Invalidation Notice**: Earlier smoke run and 4-condition ablation write/outcome metrics were invalidated due to two test harness defects (unbridged mock `openTextDocument` and mock `save()` saving a stale closure copy). All file write operations are now verified in the real `@vscode/test-electron` extension host and validated with positive compiler controls (`dotnet build`). `firstTurnAsk` rate remains valid across all runs as it is evaluated prior to write actions.
 
 ---
 

@@ -139,6 +139,70 @@
           "minimum": 30000,
           "maximum": 600000,
           "description": "Idle duration in milliseconds before unloading model when unloadOnIdle policy is active"
+        },
+        "localCopilot.context.warnOnCpuOffload": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn when partial CPU offloading of model KV cache or layers is detected from Ollama"
+        },
+        "localCopilot.router.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable swap-cost aware ModelRouter to automatically switch models based on task intent and measured profiles (ships OFF by default)"
+        },
+        "localCopilot.benchmark.repetitions": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Number of statistical repetitions (N >= 3) executed per benchmark task for variance control"
+        },
+        "localCopilot.agent.enableStructuredEditFallback": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable structured-edit fallback protocol (CREATE, SEARCH/REPLACE, DELETE_FILE) for models that lack native tool-calling support in Ollama"
+        },
+        "localCopilot.agent.suggestAgentModeOnEditIntent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Display a visible non-modal suggestion banner to switch to Agent Mode when an edit or implement intent is detected in Chat Mode"
+        },
+        "localCopilot.agent.minExplorationBeforeAsk": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Minimum distinct read-only exploration calls (list_dir, view_file_range, search_workspace) required before ask_user gate allows clarification questions"
+        },
+        "localCopilot.agent.maxClarificationQuestionsPerTask": {
+          "type": "integer",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Maximum number of user clarification questions allowed per agent task session"
+        },
+        "localCopilot.agent.enableWorkspaceDiscoveryPreStep": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run bounded deterministic workspace discovery (file tree, tech stacks, manifests, git status) before the first agent planning turn"
+        },
+        "localCopilot.tools.stream": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable streaming tool calls for low Time-to-First-Byte (TTFB) responsiveness and progressive thinking feedback"
+        },
+        "localCopilot.tools.enableEmbeddedFallback": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Allow strict single-call embedded tool extraction fallback only for models probed as embedded-style when native tool calls are empty. User-scoped only (cannot be enabled by workspace settings)."
+        },
+        "localCopilot.timeouts.headersTimeoutMs": {
+          "type": "integer",
+          "default": 45000,
+          "minimum": 1000,
+          "maximum": 300000,
+          "description": "Timeout in milliseconds for receiving HTTP response headers / first byte from Ollama"
         }
       }
     }
