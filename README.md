@@ -76,14 +76,23 @@ Configure via VS Code Settings (`localCopilot.*`):
 - `localCopilot.tools.stream`: Enable streaming tool calls for low Time-to-First-Byte (TTFB) responsiveness (~25-60ms) and progressive thinking progress (default `true`).
 - `localCopilot.tools.enableEmbeddedFallback`: Allow strict single-call embedded tool extraction fallback only for models probed as embedded-style when native tool calls are empty (default `false`, User-scoped only via application scope; requires host modal confirmation).
 - `localCopilot.timeouts.headersTimeoutMs`: Timeout in milliseconds for receiving HTTP response headers / first byte from Ollama (default `45000`, derived from cold model load + prompt eval + queue margin).
+- `localCopilot.roleModels`: Explicit per-role model overrides (e.g. `{"coder": "qwen2.5-coder:7b", "planner": "deepseek-r1:8b"}`). When not set for a role, the user's pinned model is used across all roles (default `{}`).
+- `localCopilot.agent.disableThinking`: Disable the model thinking phase (`<think>`) during agent turns if supported by Ollama via `think: false` (default `false`).
+- `localCopilot.timeouts.absoluteMaxTimeoutMs`: Absolute generation ceiling in milliseconds, after which requests abort regardless of extensions (default `900000` = 15m).
+- `localCopilot.timeouts.keepGoingGracePeriodMs`: Grace period in milliseconds to wait for user 'Keep going' confirmation before aborting when total ceiling is reached (default `30000` = 30s).
+- `localCopilot.context.maxPriorTurns`: Number of prior conversation turns to supply verbatim to the agent orchestrator (default `6`).
+- `localCopilot.context.tokenBudget`: Character budget for prior conversation context supplied to the agent orchestrator (default `4000`).
+- `localCopilot.context.enableLlmSummary`: Enable LLM-based summarization of turns older than maxPriorTurns instead of deterministic summarization (default `false`).
+- `localCopilot.agent.decomposeMultiPhaseSpecs`: Automatically decompose large multi-phase specifications into isolated sequential tasks, executing and verifying only Phase 1 per turn (default `true`).
+- `localCopilot.agent.enforceFileWritesForImplementation`: Reject code-dump text completions when implementation intent was requested without any corresponding file write tool calls (default `true`).
 
 ---
 
 ## Verification & Test Suite
 
-- **Unit Tests**: **559 passing** across 56 suites (Mocha/Chai, 100% offline mocked VS Code extension host).
-- **Real Integration Tests**: **34 passing** across 9 suites (validating real filesystem atomic writes, symlinks, junctions, timeouts, live Ollama, and fence sanitization).
-- **Real VS Code Extension Host Tests**: **6 passing** in real `@vscode/test-electron` host verifying `openTextDocument`, `applyEdit`, `document.save`, CRLF/BOM preservation, and modal approval rejection.
+- **Unit Tests**: **603 passing** across 62 suites (Mocha/Chai, 100% offline mocked VS Code extension host).
+- **Real Integration Tests**: **38 passing** across 10 suites (validating real filesystem atomic writes, symlinks, junctions, timeouts, live Ollama, 60s/120s delayed headers, and fence sanitization).
+- **Real VS Code Extension Host Tests**: **7 passing** in real `@vscode/test-electron` host verifying `openTextDocument`, `applyEdit`, `document.save`, CRLF/BOM preservation, two-message context flow with real file creation, and modal approval rejection.
 - **TypeScript Compilation**: Exit code 0 (strict mode: `tsc -p ./` and `tsc -p ./tsconfig.test.json`).
 - **Prepublish Packaging**: Verified via `npm run vscode:prepublish`.
 

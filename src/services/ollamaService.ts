@@ -1,5 +1,6 @@
 import { ToolDefinition } from './agentToolService';
 import { ExtensionLogger } from './extensionLogger';
+import { ConfigurationService } from './configurationService';
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -43,6 +44,16 @@ export interface OllamaTimeoutOptions {
   headersTimeoutMs?: number;
   idleStreamTimeoutMs?: number;
   totalTimeoutMs?: number;
+  absoluteMaxTimeoutMs?: number;
+  keepGoingGracePeriodMs?: number;
+}
+
+export type ModelDispatchSource = 'pinned' | 'router' | 'role-setting';
+
+export interface ModelResolutionResult {
+  model: string;
+  source: ModelDispatchSource;
+  toString(): string;
 }
 
 export interface ToolChatProgress {
@@ -55,18 +66,39 @@ export interface ToolChatOptions {
   stream?: boolean; // default true
   enableEmbeddedFallback?: boolean; // default false
   isEmbeddedCapableModel?: boolean; // default false
+  disableThinking?: boolean; // default false: sets think: false in Ollama API payload
   allowedToolNames?: string[];
   onProgress?: (progress: ToolChatProgress) => void;
+  onTotalCeilingWarning?: (info: { elapsedMs: number; tokenCount: number }) => Promise<'keep_going' | 'stop'>;
 }
 
 export class OllamaTimeoutError extends Error {
+  public readonly timerName: string;
+  public readonly settingKey: string;
+
   constructor(
     public readonly phase: 'connect' | 'headers' | 'idle_stream' | 'total',
     public readonly timeoutMs: number,
     message?: string
   ) {
-    super(message || `Ollama request timed out during ${phase} phase after ${timeoutMs}ms.`);
+    let timerName = 'Total Generation Timeout';
+    let settingKey = 'localCopilot.totalGenerationTimeout';
+    if (phase === 'connect') {
+      timerName = 'Connect Timeout';
+      settingKey = 'localCopilot.timeouts.connectTimeoutMs';
+    } else if (phase === 'headers') {
+      timerName = 'First-Byte / Headers Timeout';
+      settingKey = 'localCopilot.timeouts.headersTimeoutMs';
+    } else if (phase === 'idle_stream') {
+      timerName = 'Idle Stream Timeout';
+      settingKey = 'localCopilot.idleStreamTimeout';
+    }
+
+    const defaultMsg = `[${timerName}] exceeded limit of ${timeoutMs}ms (configured by '${settingKey}').`;
+    super(message || defaultMsg);
     this.name = 'OllamaTimeoutError';
+    this.timerName = timerName;
+    this.settingKey = settingKey;
   }
 }
 
@@ -473,6 +505,11 @@ export class OllamaService {
       if (options.keep_alive !== undefined) {
         payload.keep_alive = options.keep_alive;
       }
+      if (options.think !== undefined) {
+        payload.think = options.think;
+      } else if (options.disableThinking) {
+        payload.think = false;
+      }
       payloadLength = JSON.stringify(payload).length;
 
       const response = await fetch(`${this.endpoint}/api/chat`, {
@@ -624,33 +661,17 @@ export class OllamaService {
           throw abortErr;
         }
         if (timedOutPhase === 'idle_stream') {
-          throw new OllamaTimeoutError(
-            'idle_stream',
-            idleStreamTimeoutMs,
-            `Ollama stream stalled after ${idleStreamTimeoutMs}ms of inactivity.`
-          );
+          throw new OllamaTimeoutError('idle_stream', idleStreamTimeoutMs);
         }
         if (timedOutPhase === 'headers') {
-          throw new OllamaTimeoutError(
-            'headers',
-            headersTimeoutMs,
-            `Ollama response headers/model load timed out after ${headersTimeoutMs}ms.`
-          );
+          throw new OllamaTimeoutError('headers', headersTimeoutMs);
         }
         if (timedOutPhase === 'total') {
-          throw new OllamaTimeoutError(
-            'total',
-            totalTimeoutMs,
-            `Ollama generation exceeded total turn timeout of ${totalTimeoutMs}ms.`
-          );
+          throw new OllamaTimeoutError('total', totalTimeoutMs);
         }
         if (timedOutPhase === 'connect') {
           const actualTimeout = connectTimeoutMs || 5000;
-          throw new OllamaTimeoutError(
-            'connect',
-            actualTimeout,
-            `Connection to Ollama timed out after ${actualTimeout}ms.`
-          );
+          throw new OllamaTimeoutError('connect', actualTimeout);
         }
       }
       if (err instanceof OllamaTimeoutError || err instanceof OllamaVramError || err.name === 'AbortError') {
@@ -670,11 +691,14 @@ export class OllamaService {
 
       if (isFetchFailed || err.name === 'TypeError') {
         const snapshot = await this.takeDiagnosticSnapshot();
+        const causeCode = err.cause?.code || err.code || 'NetworkError';
+        const causeMsg = err.cause?.message || err.message || 'Underlying socket connection failed';
+        const formattedError = `Fetch failed (${causeCode}): ${causeMsg} while connecting to ${this.endpoint}/api/chat for model "${model}"`;
         throw new OllamaConnectionError({
           errorName: err.name || 'ConnectionError',
-          errorMessage: err.message,
-          causeCode: err.cause?.code || err.code,
-          causeMessage: err.cause?.message,
+          errorMessage: formattedError,
+          causeCode: causeCode,
+          causeMessage: causeMsg,
           endpoint: this.endpoint,
           model,
           numCtx: options.num_ctx,
@@ -737,12 +761,53 @@ export class OllamaService {
     let idleTimer: NodeJS.Timeout | undefined;
     let totalTimer: NodeJS.Timeout | undefined;
 
-    if (totalTimeoutMs > 0 && totalTimeoutMs < Infinity) {
-      totalTimer = setTimeout(() => {
-        timedOutPhase = 'total';
-        internalController.abort();
-      }, totalTimeoutMs);
-    }
+    const config = ConfigurationService.getInstance();
+    const absoluteMaxTimeoutMs = timeouts?.absoluteMaxTimeoutMs ?? config.absoluteMaxTimeoutMs;
+    const keepGoingGracePeriodMs = timeouts?.keepGoingGracePeriodMs ?? config.keepGoingGracePeriodMs;
+    let tokenCount = 0;
+    let lastChunkReceivedAt = Date.now();
+    let isHandlingCeilingWarning = false;
+
+    const scheduleTotalTimer = (durationMs: number) => {
+      if (totalTimer) clearTimeout(totalTimer);
+      if (durationMs > 0 && durationMs < Infinity) {
+        totalTimer = setTimeout(async () => {
+          const elapsed = Date.now() - startTime;
+          const isActivelyStreaming = tokenCount > 0 && (Date.now() - lastChunkReceivedAt < idleStreamTimeoutMs);
+          const reachedAbsoluteCeiling = elapsed >= absoluteMaxTimeoutMs;
+
+          // If tokens are actively arriving and below absoluteMax, prompt user
+          if (isActivelyStreaming && !reachedAbsoluteCeiling && toolOptions?.onTotalCeilingWarning && !isHandlingCeilingWarning) {
+            isHandlingCeilingWarning = true;
+            try {
+              let graceTimer: NodeJS.Timeout | undefined;
+              const decisionPromise = toolOptions.onTotalCeilingWarning({
+                elapsedMs: elapsed,
+                tokenCount,
+              });
+              const timeoutPromise = new Promise<'stop'>((resolve) => {
+                graceTimer = setTimeout(() => resolve('stop'), keepGoingGracePeriodMs);
+              });
+              const decision = await Promise.race([decisionPromise, timeoutPromise]);
+              if (graceTimer) clearTimeout(graceTimer);
+
+              if (decision === 'keep_going') {
+                isHandlingCeilingWarning = false;
+                scheduleTotalTimer(totalTimeoutMs);
+                return;
+              }
+            } catch {
+              // On error in prompt callback, proceed to abort
+            }
+          }
+
+          timedOutPhase = 'total';
+          internalController.abort();
+        }, durationMs);
+      }
+    };
+
+    scheduleTotalTimer(totalTimeoutMs);
 
     if (headersTimeoutMs > 0 && headersTimeoutMs < Infinity) {
       headersTimer = setTimeout(() => {
@@ -782,6 +847,16 @@ export class OllamaService {
       if (options.keep_alive !== undefined) {
         payload.keep_alive = options.keep_alive;
       }
+      if (options.think !== undefined) {
+        payload.think = options.think;
+      } else if (options.disableThinking) {
+        payload.think = false;
+      }
+      if (options.think !== undefined) {
+        payload.think = options.think;
+      } else if (toolOptions?.disableThinking) {
+        payload.think = false;
+      }
       payloadLength = JSON.stringify(payload).length;
 
       const response = await fetch(`${this.endpoint}/api/chat`, {
@@ -809,7 +884,7 @@ export class OllamaService {
         const redacted = redactAndCap(errorText || response.statusText);
         throw new OllamaConnectionError({
           errorName: 'OllamaHttpError',
-          errorMessage: `Ollama Tool Call Error (${response.status}): ${redacted}`,
+          errorMessage: `Ollama returned HTTP ${response.status} (${response.statusText}): ${redacted}`,
           endpoint: this.endpoint,
           model,
           numCtx: options.num_ctx,
@@ -841,6 +916,8 @@ export class OllamaService {
             if (done) break;
 
             resetIdleTimer();
+            tokenCount++;
+            lastChunkReceivedAt = Date.now();
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
@@ -954,32 +1031,16 @@ export class OllamaService {
         }
         if (timedOutPhase === 'connect') {
           const actualTimeout = connectTimeoutMs || 5000;
-          throw new OllamaTimeoutError(
-            'connect',
-            actualTimeout,
-            `Ollama connection timed out after ${actualTimeout}ms during initial handshake.`
-          );
+          throw new OllamaTimeoutError('connect', actualTimeout);
         }
         if (timedOutPhase === 'headers') {
-          throw new OllamaTimeoutError(
-            'headers',
-            headersTimeoutMs,
-            `Ollama tool call response timed out waiting for headers after ${headersTimeoutMs}ms.`
-          );
+          throw new OllamaTimeoutError('headers', headersTimeoutMs);
         }
         if (timedOutPhase === 'idle_stream') {
-          throw new OllamaTimeoutError(
-            'idle_stream',
-            idleStreamTimeoutMs,
-            `Ollama stream stalled: no tokens received for ${idleStreamTimeoutMs}ms.`
-          );
+          throw new OllamaTimeoutError('idle_stream', idleStreamTimeoutMs);
         }
         if (timedOutPhase === 'total') {
-          throw new OllamaTimeoutError(
-            'total',
-            totalTimeoutMs,
-            `Ollama tool execution exceeded total timeout of ${totalTimeoutMs}ms.`
-          );
+          throw new OllamaTimeoutError('total', totalTimeoutMs);
         }
       }
       if (err instanceof OllamaTimeoutError || err instanceof OllamaVramError || err.name === 'AbortError') {
@@ -999,11 +1060,14 @@ export class OllamaService {
 
       if (isFetchFailed || err.name === 'TypeError') {
         const snapshot = await this.takeDiagnosticSnapshot();
+        const causeCode = err.cause?.code || err.code || 'NetworkError';
+        const causeMsg = err.cause?.message || err.message || 'Underlying socket connection failed';
+        const formattedError = `Fetch failed (${causeCode}): ${causeMsg} while connecting to ${this.endpoint}/api/chat for model "${model}"`;
         throw new OllamaConnectionError({
           errorName: err.name || 'ConnectionError',
-          errorMessage: err.message,
-          causeCode: err.cause?.code || err.code,
-          causeMessage: err.cause?.message,
+          errorMessage: formattedError,
+          causeCode: causeCode,
+          causeMessage: causeMsg,
           endpoint: this.endpoint,
           model,
           numCtx: options.num_ctx,
@@ -1139,81 +1203,120 @@ export class OllamaService {
   }
 
   /**
-   * Resolves the specialized model for an agent persona dynamically:
-   * Selects tool-capable models for execution roles (coder, tester)
-   * without hardcoding model names.
+   * Resolves the model for an agent role dynamically with zero hardcoded regexes:
+   * 1. If explicit role setting exists (in options.roleSettings or localCopilot.roleModels), uses it (source: 'role-setting').
+   * 2. If user selected a specific model (pinned, not 'auto'), ALL roles use it (source: 'pinned').
+   * 3. In Auto mode ('auto' or empty), resolves through data-driven ModelRouter only (source: 'router').
+   * Logs every dispatch in the Output Channel.
    */
   public resolveModelForRole(
-    role: 'orchestrator' | 'planner' | 'coder' | 'tester',
+    role: 'orchestrator' | 'planner' | 'coder' | 'tester' | 'reviewer' | string,
     userSelectedModel: string,
-    availableModels: string[],
-    capabilitiesMap?: Map<string, ModelCapabilityResult>
-  ): string {
-    if (availableModels.length <= 1) {
-      return availableModels[0] || userSelectedModel;
+    availableModels: string[] = [],
+    capabilitiesMap?: Map<string, ModelCapabilityResult> | { roleSettings?: Record<string, string>; modelRouter?: any; prompt?: string }
+  ): ModelResolutionResult {
+    let options: { roleSettings?: Record<string, string>; modelRouter?: any; prompt?: string } | undefined;
+    if (capabilitiesMap && !(capabilitiesMap instanceof Map)) {
+      options = capabilitiesMap;
     }
 
-    if (capabilitiesMap && capabilitiesMap.size > 0) {
+    const config = ConfigurationService.getInstance();
+    const roleKey = (role || '').toLowerCase();
+
+    // 1. Check explicit per-role user configuration
+    const explicitRoleModel = options?.roleSettings?.[roleKey] || config.getRoleModel(roleKey);
+    if (explicitRoleModel && typeof explicitRoleModel === 'string' && explicitRoleModel.trim()) {
+      const selected = explicitRoleModel.trim();
+      ExtensionLogger.info(
+        `[ModelDispatch] Role: "${role}" -> Model: "${selected}" (Source: role-setting, override from localCopilot.roleModels)`
+      );
+      return {
+        model: selected,
+        source: 'role-setting',
+        toString() { return this.model; }
+      };
+    }
+
+    // 2. Check user-pinned model (specific model selected, not 'auto' and not empty)
+    const isPinned = userSelectedModel &&
+      userSelectedModel.toLowerCase() !== 'auto' &&
+      userSelectedModel.trim() !== '';
+
+    if (isPinned) {
+      const selected = userSelectedModel.trim();
+      ExtensionLogger.info(
+        `[ModelDispatch] Role: "${role}" -> Model: "${selected}" (Source: pinned, user selected model honored across all roles)`
+      );
+      return {
+        model: selected,
+        source: 'pinned',
+        toString() { return this.model; }
+      };
+    }
+
+    // 3. Auto Mode: resolve through data-driven ModelRouter only
+    let routedModel: string | undefined;
+    if (options?.modelRouter && typeof options.modelRouter.selectModel === 'function') {
+      try {
+        const intent = (roleKey === 'coder' || roleKey === 'tester') ? 'coding' : 'agent';
+        const decision = options.modelRouter.selectModel(options.prompt || '', intent, availableModels);
+        routedModel = decision?.model;
+      } catch {}
+    }
+
+    // Fallback if router not provided: pick first tool-capable or available
+    if (!routedModel && capabilitiesMap instanceof Map && capabilitiesMap.size > 0) {
       const toolCapable = availableModels.filter(m => capabilitiesMap.get(m)?.hasTools);
-      const nonToolModels = availableModels.filter(m => !capabilitiesMap.get(m)?.hasTools);
-
-      if (role === 'orchestrator' || role === 'planner') {
-        if (nonToolModels.length > 0) return nonToolModels[0];
-        return userSelectedModel || availableModels[0];
-      }
-
-      // Coder and Tester need tool support
-      if (toolCapable.length > 0) {
-        if (toolCapable.includes(userSelectedModel)) return userSelectedModel;
-        return toolCapable[0];
-      }
+      if (toolCapable.length > 0) routedModel = toolCapable[0];
+    }
+    if (!routedModel && availableModels.length > 0) {
+      routedModel = availableModels[0];
     }
 
-    // Role fallback when capabilitiesMap is not provided
-    const reasoningModel = availableModels.find(m => /deepseek|reason|r1/i.test(m));
-    const coderModel = availableModels.find(m => /coder|code/i.test(m));
-
-    if (role === 'orchestrator' || role === 'planner') {
-      return reasoningModel || availableModels[0];
-    }
-    return coderModel || availableModels[0];
+    const finalModel = routedModel || config.defaultModel || 'qwen2.5-coder:7b';
+    ExtensionLogger.info(
+      `[ModelDispatch] Role: "${role}" -> Model: "${finalModel}" (Source: router, data-driven selection in Auto mode)`
+    );
+    return {
+      model: finalModel,
+      source: 'router',
+      toString() { return this.model; }
+    };
   }
 
   /**
    * Model orchestration helper dynamically selecting execution model:
-   * Avoids hardcoded model strings; uses capability metadata and user choice.
+   * Maps lifecycle phase to role and delegates to resolveModelForRole.
    */
   public resolveModelForPhase(
-    phase: 'planning' | 'execution',
+    phase: 'planning' | 'execution' | 'review' | string,
     userSelectedModel: string,
-    availableModels: string[],
-    capabilitiesMap?: Map<string, ModelCapabilityResult>
-  ): string {
-    if (availableModels.length <= 1) {
-      return availableModels[0] || userSelectedModel;
+    availableModels: string[] = [],
+    capabilitiesMap?: Map<string, ModelCapabilityResult> | { roleSettings?: Record<string, string>; modelRouter?: any; prompt?: string }
+  ): ModelResolutionResult {
+    const roleMapping: Record<string, string> = {
+      planning: 'planner',
+      execution: 'coder',
+      review: 'reviewer',
+    };
+    const role = roleMapping[phase.toLowerCase()] || phase;
+    return this.resolveModelForRole(role, userSelectedModel, availableModels, capabilitiesMap);
+  }
+
+  /**
+   * Checks /api/ps to determine if the active model has partial CPU offloading.
+   */
+  public async getActiveModelOffloadInfo(modelName: string): Promise<{ isPartiallyOffloaded: boolean; totalBytes: number; vramBytes: number } | null> {
+    try {
+      const loaded = await this.getLoadedModels();
+      const active = loaded.find(m => m.name === modelName || m.model === modelName);
+      if (!active || !active.size) return null;
+      const vram = active.sizeVram ?? active.size;
+      const isPartiallyOffloaded = vram < active.size * 0.98;
+      return { isPartiallyOffloaded, totalBytes: active.size, vramBytes: vram };
+    } catch {
+      return null;
     }
-
-    if (capabilitiesMap && capabilitiesMap.size > 0) {
-      const toolCapable = availableModels.filter(m => capabilitiesMap.get(m)?.hasTools);
-      const nonToolModels = availableModels.filter(m => !capabilitiesMap.get(m)?.hasTools);
-
-      if (phase === 'planning' && nonToolModels.length > 0) {
-        return nonToolModels.includes(userSelectedModel) ? userSelectedModel : nonToolModels[0];
-      }
-
-      if (phase === 'execution' && toolCapable.length > 0) {
-        return toolCapable.includes(userSelectedModel) ? userSelectedModel : toolCapable[0];
-      }
-    }
-
-    // Heuristic phase fallback when capabilitiesMap is not provided
-    const reasoningModel = availableModels.find(m => /deepseek|reason|r1/i.test(m));
-    const coderModel = availableModels.find(m => /coder|code/i.test(m));
-
-    if (phase === 'planning') {
-      return reasoningModel || availableModels[0];
-    }
-    return coderModel || availableModels[0];
   }
 
   private cleanMessagesForOllama(messages: ChatMessage[]): any[] {

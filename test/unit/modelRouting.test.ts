@@ -88,26 +88,84 @@ describe('Model Routing & Auto-Selection Baseline', () => {
     }
   });
 
-  it('should correctly select persona model via resolveModelForRole', () => {
-    const orchModel = ollamaService.resolveModelForRole('orchestrator', 'auto', availableModels);
-    assert.strictEqual(orchModel, 'deepseek-r1:8b');
+  it('should preserve pinned user model across all roles with source=pinned', () => {
+    const pinnedModel = 'qwen3.5:9b';
+    const roles: Array<'orchestrator' | 'planner' | 'coder' | 'tester' | 'reviewer'> = [
+      'orchestrator',
+      'planner',
+      'coder',
+      'tester',
+      'reviewer'
+    ];
 
-    const plannerModel = ollamaService.resolveModelForRole('planner', 'auto', availableModels);
-    assert.strictEqual(plannerModel, 'deepseek-r1:8b');
-
-    const coderModel = ollamaService.resolveModelForRole('coder', 'auto', availableModels);
-    assert.strictEqual(coderModel, 'qwen2.5-coder:7b');
-
-    const testerModel = ollamaService.resolveModelForRole('tester', 'auto', availableModels);
-    assert.strictEqual(testerModel, 'qwen2.5-coder:7b');
+    for (const role of roles) {
+      const res = ollamaService.resolveModelForRole(role, pinnedModel, availableModels);
+      assert.strictEqual(res.model, pinnedModel, `Role "${role}" must use pinned model "${pinnedModel}"`);
+      assert.strictEqual(res.source, 'pinned', `Role "${role}" source must be "pinned"`);
+      assert.strictEqual(String(res), pinnedModel, `Coerced string must equal pinned model`);
+    }
   });
 
-  it('should correctly select execution model via resolveModelForPhase', () => {
-    // When deepseek-r1 is selected, planning stays deepseek, execution transitions to coder
-    const planModel = ollamaService.resolveModelForPhase('planning', 'deepseek-r1:8b', availableModels);
-    assert.strictEqual(planModel, 'deepseek-r1:8b');
+  it('should resolve Auto mode via data-driven ModelRouter with source=router', () => {
+    const mockRouter = {
+      selectModel: (prompt: string, intent: string) => {
+        return {
+          model: intent === 'coding' ? 'qwen2.5-coder:7b' : 'qwen3.5:9b',
+          rationale: 'data-driven selection'
+        };
+      }
+    };
 
-    const execModel = ollamaService.resolveModelForPhase('execution', 'deepseek-r1:8b', availableModels);
-    assert.ok(execModel.includes('qwen'), `Expected execution phase to route to Qwen, got ${execModel}`);
+    const orchRes = ollamaService.resolveModelForRole('orchestrator', 'auto', availableModels, {
+      modelRouter: mockRouter,
+      prompt: 'Refactor system architecture'
+    });
+    assert.strictEqual(orchRes.model, 'qwen3.5:9b');
+    assert.strictEqual(orchRes.source, 'router');
+
+    const coderRes = ollamaService.resolveModelForRole('coder', 'auto', availableModels, {
+      modelRouter: mockRouter,
+      prompt: 'Write unit tests'
+    });
+    assert.strictEqual(coderRes.model, 'qwen2.5-coder:7b');
+    assert.strictEqual(coderRes.source, 'router');
+  });
+
+  it('should honor explicit per-role setting with source=role-setting', () => {
+    const roleSettings = {
+      coder: 'qwen2.5-coder:7b',
+      planner: 'deepseek-r1:8b'
+    };
+
+    // Even if user pinned a model, explicit roleSettings override it
+    const coderRes = ollamaService.resolveModelForRole('coder', 'qwen3.5:9b', availableModels, {
+      roleSettings
+    });
+    assert.strictEqual(coderRes.model, 'qwen2.5-coder:7b');
+    assert.strictEqual(coderRes.source, 'role-setting');
+
+    const plannerRes = ollamaService.resolveModelForRole('planner', 'qwen3.5:9b', availableModels, {
+      roleSettings
+    });
+    assert.strictEqual(plannerRes.model, 'deepseek-r1:8b');
+    assert.strictEqual(plannerRes.source, 'role-setting');
+
+    // Unconfigured role (e.g. orchestrator) still uses pinned model
+    const orchRes = ollamaService.resolveModelForRole('orchestrator', 'qwen3.5:9b', availableModels, {
+      roleSettings
+    });
+    assert.strictEqual(orchRes.model, 'qwen3.5:9b');
+    assert.strictEqual(orchRes.source, 'pinned');
+  });
+
+  it('should delegate resolveModelForPhase to resolveModelForRole without model regexes', () => {
+    const pinned = 'qwen3.5:9b';
+    const planRes = ollamaService.resolveModelForPhase('planning', pinned, availableModels);
+    assert.strictEqual(planRes.model, pinned);
+    assert.strictEqual(planRes.source, 'pinned');
+
+    const execRes = ollamaService.resolveModelForPhase('execution', pinned, availableModels);
+    assert.strictEqual(execRes.model, pinned);
+    assert.strictEqual(execRes.source, 'pinned');
   });
 });

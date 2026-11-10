@@ -1133,6 +1133,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
+      // Check for partial CPU offload if configured
+      if (config.warnOnCpuOffload) {
+        try {
+          const offloadInfo = await this._ollamaService.getActiveModelOffloadInfo(resolvedModel);
+          if (offloadInfo && offloadInfo.isPartiallyOffloaded) {
+            const vramMB = Math.round(offloadInfo.vramBytes / (1024 * 1024));
+            const totalMB = Math.round(offloadInfo.totalBytes / (1024 * 1024));
+            const safeModel = ChatViewProvider.escapeHtml(resolvedModel);
+            this._view?.webview.postMessage({
+              type: 'addMessage',
+              role: 'system',
+              text: `⚠️ **Partial CPU Offload Notice**: Model \`${safeModel}\` is partially offloaded to CPU (${vramMB}MB VRAM / ${totalMB}MB total). Generation speed may be reduced.`,
+            });
+            ExtensionLogger.warn(
+              `[VRAM] Model "${resolvedModel}" is partially offloaded to CPU (${vramMB}MB / ${totalMB}MB).`
+            );
+          }
+        } catch {}
+      }
+
       this._currentAgent = new SwarmOrchestrator(this._ollamaService, {
         maxTurns,
         numCtx,
@@ -1141,6 +1161,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         userModel: resolvedModel,
         availableModels: this._cachedModels.length > 0 ? this._cachedModels : [resolvedModel],
         workspaceRootUri: sessionRootUri,
+        roleSettings: config.roleModels,
+        priorConversation: this._chatHistory,
       });
 
       const waitingTracker = this._startWaitingForOllamaTracker();
@@ -1992,6 +2014,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
 
       <div style="display: flex; align-items: center; gap: 6px;">
+        <span id="buildBadge" class="connection-status-pill" title="Local Copilot Build Version (compiled 2026-11-08)" style="font-size: 10px; opacity: 0.85;">v0.2.0</span>
         <span id="connectionBadge" class="connection-status-pill connecting" data-action="fetchModels" title="Click to refresh connection">🔄 Connecting...</span>
         <button type="button" id="auto-btn" class="pill-btn active" data-action="toggleAuto">⚡ Auto: ON</button>
         <button type="button" id="reset-btn" class="icon-btn" data-action="fetchModels" title="Refresh Models">🔄</button>

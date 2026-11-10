@@ -1,7 +1,7 @@
 {
   "rawCommandOutputs": {
     "nvidiaSmi": "NVIDIA GeForce RTX 3070, 617.14, 8192, 6896",
-    "ollamaVersion": "ollama version is 0.40.7"
+    "ollamaVersion": "ollama version is 0.40.15"
   },
   "gpu": {
     "name": "NVIDIA GeForce RTX 3070",
@@ -27,10 +27,13 @@
     "version": "Windows 11 Pro"
   },
   "ollama": {
-    "versionString": "ollama version is 0.40.7"
+    "versionString": "ollama version is 0.40.15",
+    "previousVersion": "0.40.7",
+    "upgradedAt": "2026-11-08T19:12:37+05:30",
+    "upgradeEvidence": "app-1.log: time=2026-11-08T19:11:16.570+05:30 source=updater.go:133 msg='New update available at https://github.com/ollama/ollama/releases/download/v0.40.15/OllamaSetup.exe'; time=2026-11-08T19:11:19.205+05:30 source=updater_windows.go:155 msg='starting upgrade' installer=C:\\Users\\Sagar\\AppData\\Local\\Ollama\\OllamaSetup.exe; app.log: time=2026-11-08T19:12:37.882+05:30 source=app_windows.go:281 msg='starting Ollama' version=0.40.15"
   },
   "node": {
     "version": "v26.13.0"
   },
-  "capturedAt": "2026-11-07T19:09:37.724Z"
+  "capturedAt": "2026-11-08T19:28:45.000Z"
 }

@@ -8,6 +8,8 @@ export interface ExploreBeforeAskGateOptions {
   hasToolSupport?: boolean;
   discoveryResult?: WorkspaceDiscoveryResult;
   generationId?: string;
+  hasPriorContext?: boolean;
+  isReferential?: boolean;
 }
 
 export interface GateEvaluationResult {
@@ -30,6 +32,8 @@ export class ExploreBeforeAskGate {
   private readonly hasToolSupport: boolean;
   private readonly discoveryResult?: WorkspaceDiscoveryResult;
   private readonly generationId: string;
+  private readonly hasPriorContext: boolean;
+  private readonly isReferential: boolean;
 
   private distinctExplorations = new Set<string>();
   private clarificationQuestionsAsked = 0;
@@ -44,6 +48,8 @@ export class ExploreBeforeAskGate {
     this.hasToolSupport = options?.hasToolSupport ?? true;
     this.discoveryResult = options?.discoveryResult;
     this.generationId = options?.generationId || `gen_${Date.now()}`;
+    this.hasPriorContext = options?.hasPriorContext ?? false;
+    this.isReferential = options?.isReferential ?? false;
   }
 
   public getDistinctExplorationCount(): number {
@@ -142,7 +148,21 @@ export class ExploreBeforeAskGate {
     }
 
     // 2. Escape Hatch: Empty / Irrelevant Workspace
+    // Note: If the task has prior conversation context or is a referential follow-up,
+    // do NOT trigger the empty workspace escape hatch to allow ungrounded clarification!
     if (!this.hasRelevantFiles) {
+      if (this.hasPriorContext || this.isReferential) {
+        this.taskRejectionsCount++;
+        const reason = `Prior conversation context and proposal exist. Do not ask for clarification; implement the referenced changes on disk using the coder agent.`;
+        ExtensionLogger.warn(`[ExploreBeforeAskGate][${this.generationId}] Rejected: ${reason}`);
+        return {
+          allowed: false,
+          reason,
+          rejectionCount: this.taskRejectionsCount,
+          questionsAskedCount: this.clarificationQuestionsAsked,
+        };
+      }
+
       this.clarificationQuestionsAsked++;
       ExtensionLogger.info(
         `[ExploreBeforeAskGate][${this.generationId}] Workspace discovery found 0 relevant files. Allowing early clarification.`

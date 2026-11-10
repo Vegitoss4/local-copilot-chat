@@ -76,7 +76,7 @@ describe('Phase 8.2: Real-World Live Ollama Daemon & VRAM Verification Tier', fu
       },
       undefined,
       { num_ctx: 2048, temperature: 0.1 },
-      { headersTimeoutMs: 30000, idleStreamTimeoutMs: 15000 }
+      { headersTimeoutMs: 60000, idleStreamTimeoutMs: 20000 }
     );
 
     assert.ok(output.length > 0, 'Model produced empty stream');

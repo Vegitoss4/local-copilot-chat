@@ -10,7 +10,7 @@ export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('Local Copilot');
   context.subscriptions.push(outputChannel);
   outputChannel.show(true);
-  outputChannel.appendLine('[Extension] Local Copilot Chat activating...');
+  outputChannel.appendLine('[Extension] Local Copilot Chat activating build v0.2.0 (compiled 2026-11-08)...');
 
   const configService = ConfigurationService.getInstance();
   context.subscriptions.push(configService);

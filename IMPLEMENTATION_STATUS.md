@@ -1,22 +1,25 @@
 # Local Copilot Chat — Implementation Journal & Recovery Status
 
-**Current Date / Timestamp:** 2026-11-08T12:30:00+05:30
+**Current Date / Timestamp:** 2026-11-10T13:30:00+05:30
 **Branch:** `main`  
-**Commit Authorization:** NOT GRANTED (Working tree changes only, zero Git commits created)
+**Commit Authorization:** GRANTED (Commit and push authorized by user)
 
 ---
 
 ## 1. Executive Summary & Verification Checkpoint
 
-This document serves as the master recovery checkpoint and architectural record for the end-to-end engineering execution across Phase 1 through Phase 12 of `local-copilot-chat`.
+This document serves as the master recovery checkpoint and architectural record for the end-to-end engineering execution across Phase 1 through Phase 13 of `local-copilot-chat`.
 
 ### Key Verification Metrics:
-- **Unit Test Suite**: **580 passing, 0 pending, 0 failing across 59 test suites**.
-- **Real Integration Tier**: Real HTTP server tests covering streaming inactivity, 62s long thinking, 60s and 120s delayed headers, and exceeded headers limits.
-- **Real VS Code Extension Host Tier**: **6 passing, 0 failing in real Electron host**.
+- **Unit Test Suite**: **603 passing, 0 pending, 0 failing across 62 test suites**.
+- **Real Integration Tier**: **38 passing, 0 failing across 10 suites** (real HTTP server tests covering streaming inactivity, 62s long thinking, 60s and 120s delayed headers, and exceeded headers limits).
+- **Real VS Code Extension Host Tier**: **7 passing, 0 failing in real Electron host**.
 - **TypeScript Compilation**: `npm run compile` (0 errors), `npm run compile:test` (0 errors), `npm run vscode:prepublish` (0 errors).
-- **Git Hygiene**: `git diff --check` passed cleanly; zero git commits made per strict user instructions.
-- **Hardware Profile**: NVIDIA GeForce RTX 3070 (8,192 MB VRAM), Driver 617.14, single-resident model execution under 8 GB constraints.
+- **Git Hygiene**: `git diff --check` passed cleanly.
+- **Hardware Profile**: NVIDIA GeForce RTX 3070 (8,192 MB VRAM), Driver 617.14, Ollama 0.40.15 (upgraded from 0.40.7 on 2026-11-08T19:12:37+05:30). Single-resident model execution under 8 GB constraints.
+- **Model Dispatch Invariant**: Pinned model enforced across all roles (`orchestrator`, `planner`, `coder`, `tester`, `reviewer`). Zero hardcoded model regexes (`/deepseek|reason|r1/i` removed). Explicit role overrides via `localCopilot.roleModels` honored when set. All dispatches logged to Output Channel and surfaced in UI.
+- **Ceiling Timeout Check-In**: Expiry of `totalGenerationTimeout` during active streaming triggers user check-in banner ("Still generating... Keep going / Stop") before aborting. Optional thinking suppression via `localCopilot.agent.disableThinking` (`think: false`).
+- **Conversation Context & Execution Invariant**: Prior conversation passed with token budget and trust labeling (`conversationContextManager.ts`). Referential prompts ("actually implement the changes") resolve against previous assistant proposals. Code-dump text responses without workspace file writes are rejected and retried with write directives. Multi-phase specifications decompose to execute Phase 1 only. Empty-workspace gate blocks ungrounded clarification when prior context exists.
 
 ---
 
@@ -63,6 +66,8 @@ This document serves as the master recovery checkpoint and architectural record 
 | **Phase 8.1 - 8.5** | Independent Audit Remediation & Live Validation | **COMPLETED** | 286 | Independent audit remediation (SEC-01 to SEC-04, CONC-01 to CONC-04, RES-01), real integration tier (7 suites, 23 passing, 3 pending), live Ollama streaming and VRAM release verification, backup/DR drill. |
 | **Phase 9.0 - 9.7** | Agent Intelligence & Coding Quality | **COMPLETED** | 327 | 30-task benchmark corpus, 4-stage tolerant JSON parser, context compaction, incremental disk-cached repo map, context budget manager with XML quarantine, PlanSchemaV1, caller impact analysis, iterative code repair with oscillation detection, independent reviewer. |
 | **Phase 10.0 - 10.8** | Advanced Orchestration & Swarm Intelligence | **COMPLETED** | 361 | Hardware capacity manager (8 GB VRAM serialized FIFO inference), Whiteboard Coordinator v3, subagent task pool, file-level leases with 30s TTL, typed agent contracts, subagent delegation protocol, multi-agent consensus verifier, adversarial prompt defense, 3-tier multi-strategy code fallbacks. |
+| **Phase 11 & 12** | Streaming Tools, Multi-Tier Timeouts & Extension Host Harness | **COMPLETED** | 582 | Streaming tool calls (`stream: true`), multi-tier timeouts (connect, headers, sliding idle, total ceiling), model override elimination, timer attribution hardening, real Electron test harness (`smokeRealHost.test.ts`). |
+| **Phase 13** | Conversation Context, Code-Dump Rejection & Multi-Phase Spec | **COMPLETED** | 603 | `ConversationContextManager`, token-budgeted prior context with trust partitioning, referential objective resolution, code-dump rejection with file write directives, multi-phase spec decomposition, empty-workspace gate hardening. |
 
 ---
 
@@ -207,8 +212,15 @@ npm run test:unit
 - **Streaming Tool Calling (`ollamaService.ts`)**: `stream: true` default in `chatWithTools` accumulating tool calls across chunk deltas, delivering 25–29ms TTFB on `qwen2.5-coder:7b` and 61ms on `qwen3.5:9b` (compared to non-streaming total wait times of ~814ms and ~1209ms) with progressive thinking token progress.
 - **Multi-Tier Inactivity Timeouts (`ollamaService.ts`)**: Independent connect (5s), headers (15s/45s), sliding stream inactivity (30s resetting on every chunk), and total (180s/300s).
 - **Probe Safety & Strict Embedded Gating (`ollamaService.ts`)**: Probes cached by `modelName + digest` without model eviction; embedded fallback default OFF (`localCopilot.tools.enableEmbeddedFallback`).
-- **Real Electron Extension Host Harness (`smokeRealHost.test.ts`)**: 6 passing tests in real extension host validating `openTextDocument`, `applyEdit`, `save()`, UTF-8 BOM, CRLF preservation, and modal cancellation rejection safety.
+- **Real Electron Extension Host Harness (`smokeRealHost.test.ts`)**: 7 passing tests in real extension host validating `openTextDocument`, `applyEdit`, `save()`, UTF-8 BOM, CRLF preservation, and modal cancellation rejection safety.
 - **Harness Invalidation**: Earlier mock write/outcome metrics formally marked INVALID due to harness defects (unbridged mock `openTextDocument`, stale closure `save()`). First-turn ask rates remain valid. Valid measurements re-run with positive controls, $N=3$ smoke traces, and 24-cell reduced ablation.
+
+### 12. [CONVERSATION-CONTEXT-CODE-DUMP-SPECS] Conversation Context, Code-Dump Rejection & Multi-Phase Decomposition
+- **Conversation Context Bounding & Trust Partitioning (`conversationContextManager.ts`)**: Token-budgeted prior conversation context window (last N turns verbatim + deterministic older turn summary), trust partitioning (user turns trusted, tool output tagged untrusted), preventing prompt injection in tool outputs from hijacking agent directives.
+- **Referential Objective Resolution (`conversationContextManager.ts`, `swarmOrchestrator.ts`)**: Resolves referential follow-ups ("actually implement the changes", "implement those", "do it", "continue", "fix it") by attaching previous assistant proposals as explicit objective context. Asks specific clarifying questions when no proposal exists.
+- **Code-Dump Without File Writes Rejection & Diff-Preview Fallback (`swarmOrchestrator.ts`)**: Setting `localCopilot.agent.enforceFileWritesForImplementation` (default `true`) rejects completions where the assistant output code blocks in chat with zero disk writes. Enforces a coder delegation retry; if 0 writes persist, surfaces the transactional diff-preview apply banner. `finish_task` rejects claims of file creation when 0 files were actually modified.
+- **Large Multi-Phase Specification Decomposition (`conversationContextManager.ts`, `swarmOrchestrator.ts`)**: Setting `localCopilot.agent.decomposeMultiPhaseSpecs` (default `true`) automatically scopes execution strictly to Phase 1, carrying overall constraints on the whiteboard and prompting for continuation upon Phase 1 completion.
+- **Empty Workspace Gate Hardening (`exploreBeforeAskGate.ts`)**: Empty-workspace escape hatch is suppressed when prior conversation context or a referential request exists, preventing ungrounded clarification questions on new projects.
 
 ---
 
@@ -228,11 +240,11 @@ git diff --check
 > 0 errors
 
 npm run test:unit
-> 559 passing (6s) across 56 test suites, 0 failing
+> 603 passing (8s) across 62 test suites, 0 failing
 
 npm run test:real
-> 34 passing across 9 test suites, 0 failing
+> 38 passing across 10 test suites, 0 failing
 
 npm run test:integration (real VS Code Electron extension host)
-> 6 passing (28s), 0 failing
+> 7 passing (28s), 0 failing
 ```

@@ -470,7 +470,9 @@ export class SessionEngine {
         autonomousMode: this._isAutonomousMode,
         userModel: resolvedModel,
         availableModels: this._cachedModels.length > 0 ? this._cachedModels : [resolvedModel],
-        workspaceRootUri: sessionRootUri
+        workspaceRootUri: sessionRootUri,
+        roleSettings: config.roleModels,
+        priorConversation: this._chatHistory,
       });
 
       const finalResult = await this._currentAgent.runTask(

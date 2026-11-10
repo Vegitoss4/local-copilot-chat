@@ -6,6 +6,7 @@ import { PathSecurity } from './pathSecurity';
 import { WorkspaceDiscoveryService, WorkspaceDiscoveryResult } from './workspaceDiscoveryService';
 import { ExploreBeforeAskGate } from './exploreBeforeAskGate';
 import { ConfigurationService } from './configurationService';
+import { ConversationContextManager } from './conversationContextManager';
 
 export interface ApprovalRequest {
   id: string;
@@ -43,6 +44,7 @@ export interface AgentOptions {
   userModel: string;
   availableModels: string[];
   workspaceRootUri?: vscode.Uri;
+  priorConversation?: ChatMessage[];
 }
 
 export class AutonomousAgent {
@@ -55,6 +57,7 @@ export class AutonomousAgent {
   private userModel: string;
   private availableModels: string[];
   private _sessionRootUri?: vscode.Uri;
+  private priorConversation?: ChatMessage[];
   private pendingUserAnswerResolver?: (answer: string) => void;
   private discoveryResult?: WorkspaceDiscoveryResult;
   private exploreGate?: ExploreBeforeAskGate;
@@ -68,6 +71,7 @@ export class AutonomousAgent {
     this.userModel = options.userModel;
     this.availableModels = options.availableModels;
     this._sessionRootUri = options.workspaceRootUri;
+    this.priorConversation = options.priorConversation;
   }
 
   public setAutonomousMode(enabled: boolean) {
@@ -120,6 +124,27 @@ export class AutonomousAgent {
       this.discoveryResult = discoveryResult;
     }
 
+    const refRes = ConversationContextManager.resolveReferentialObjective(
+      userGoal,
+      this.priorConversation || []
+    );
+
+    if (refRes.requiresClarification) {
+      callbacks.onStatusUpdate?.('Clarification required: No prior context for referential request.');
+      return refRes.clarificationQuestion || 'What specific changes or files would you like to implement?';
+    }
+
+    let effectiveUserGoal = refRes.effectiveObjective;
+
+    const priorContextResult = ConversationContextManager.formatPriorContext(
+      this.priorConversation || [],
+      {
+        maxPriorTurns: config.maxPriorTurns,
+        tokenBudget: config.tokenBudget,
+        enableLlmSummary: config.enableLlmSummary,
+      }
+    );
+
     let modelHasTools = true;
     try {
       const caps = await this.ollamaService.getModelCapabilities(this.userModel);
@@ -134,9 +159,13 @@ export class AutonomousAgent {
       hasToolSupport: modelHasTools,
       discoveryResult,
       generationId,
+      hasPriorContext: priorContextResult.hasPriorContext,
+      isReferential: refRes.isReferential,
     });
 
-    let effectiveUserGoal = userGoal;
+    if (priorContextResult.hasPriorContext) {
+      effectiveUserGoal = `${priorContextResult.formattedContext}\n\n${effectiveUserGoal}`;
+    }
     if (discoveryResult) {
       effectiveUserGoal += `\n\n${discoveryResult.rawText}`;
     }
@@ -148,13 +177,14 @@ export class AutonomousAgent {
     ];
 
     // ==========================================
-    // PHASE 1: Architectural Planning (DeepSeek-R1 / Qwen 3.5)
+    // PHASE 1: Architectural Planning (User Selected / Role-Configured)
     // ==========================================
-    const planningModel = this.ollamaService.resolveModelForPhase('planning', this.userModel, this.availableModels);
-    callbacks.onStatusUpdate?.(`Phase 1: Architectural Planning with [${planningModel}]...`);
+    const planningRes = this.ollamaService.resolveModelForPhase('planning', this.userModel, this.availableModels, { prompt: userGoal });
+    const planningModel = planningRes.model;
+    callbacks.onStatusUpdate?.(`Phase 1: Architectural Planning with [${planningModel}] (${planningRes.source})...`);
     callbacks.onProgress?.({
       icon: '🧠',
-      message: `Analyzing architecture and planning steps with ${planningModel}...`
+      message: `Analyzing architecture and planning steps with ${planningModel} (${planningRes.source})...`
     });
 
     let planResponse = '';
@@ -197,10 +227,15 @@ export class AutonomousAgent {
     if (signal?.aborted) throw new Error('Task aborted by user.');
 
     // ==========================================
-    // PHASE 2: Iterative ReAct Execution Loop (Qwen Coder / Qwen 3.5)
+    // PHASE 2: Iterative ReAct Execution Loop (User Selected / Role-Configured)
     // ==========================================
-    const execModel = this.ollamaService.resolveModelForPhase('execution', this.userModel, this.availableModels);
-    callbacks.onStatusUpdate?.(`Phase 2: Autonomous Tool Execution with [${execModel}]...`);
+    const execRes = this.ollamaService.resolveModelForPhase('execution', this.userModel, this.availableModels, { prompt: userGoal });
+    const execModel = execRes.model;
+    callbacks.onStatusUpdate?.(`Phase 2: Autonomous Tool Execution with [${execModel}] (${execRes.source})...`);
+    callbacks.onProgress?.({
+      icon: '🤖',
+      message: `Autonomous execution with ${execModel} (${execRes.source})...`
+    });
 
     let iteration = 0;
     let finalAnswer = '';

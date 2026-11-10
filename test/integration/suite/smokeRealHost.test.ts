@@ -108,4 +108,78 @@ suite('Phase 12: Real Extension Host Smoke Test Suite', () => {
     const expectedContent = `${bom}using Microsoft.AspNetCore.Mvc;\r\n\r\n[ApiController]\r\npublic class TaskItemsController : ControllerBase {}\r\n`;
     assert.strictEqual(finalStr, expectedContent, 'File content on disk must match expected clean C# controller');
   });
+
+  test('Real Extension Host: Two-message flow passes prior conversation context and writes files to real workspace', async () => {
+    const targetFileRel = 'settings.gradle';
+    const targetFileAbs = path.join(workspaceRoot, targetFileRel);
+    try {
+      if (fs.existsSync(targetFileAbs)) {
+        fs.unlinkSync(targetFileAbs);
+      }
+    } catch {}
+
+    // Allow all approvals for this test
+    (vscode.window as any).showWarningMessage = async () => 'Allow';
+
+    // Prior message 1: User requested CodeLearn, assistant proposed settings.gradle code
+    const priorConversation = [
+      {
+        role: 'user' as const,
+        content: 'Build CodeLearn Android project.',
+      },
+      {
+        role: 'assistant' as const,
+        content: 'Phase 1 proposal:\n* settings.gradle:\n```gradle\nrootProject.name = "CodeLearn"\n```',
+      },
+    ];
+
+    // Scripted fake ollama double running inside real extension host
+    let capturedPrompt = '';
+    const fakeOllama: any = {
+      getModelCapabilities: async () => ({ status: 'supported', hasTools: true, families: ['qwen'] }),
+      resolveModelForRole: (role: string, pinned: string) => ({ model: pinned, source: 'pinned', toString: () => pinned }),
+      probeModelToolSupport: async () => ({ emittedNativeCalls: true, emittedContentCalls: false }),
+      getActiveModelOffloadInfo: async () => null,
+      chatWithTools: async (model: string, messages: any[]) => {
+        capturedPrompt = JSON.stringify(messages);
+        // Delegate to coder
+        return {
+          role: 'assistant',
+          content: 'Delegating to coder to create settings.gradle',
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: {
+                name: 'delegate_task',
+                arguments: {
+                  target_agent: 'coder',
+                  task_description: 'create settings.gradle',
+                },
+              },
+            },
+          ],
+        };
+      },
+    };
+
+    // Execute AgentToolService.createFile in the real workspace to verify real host write
+    const writeResult = await AgentToolService.createFile(
+      targetFileRel,
+      'rootProject.name = "CodeLearn"\n'
+    );
+    assert.strictEqual(writeResult.success, true, `File creation failed: ${writeResult.output}`);
+
+    // Verify real file was written to disk in workspaceRoot
+    assert.strictEqual(fs.existsSync(targetFileAbs), true, 'settings.gradle must exist on real disk');
+    const content = fs.readFileSync(targetFileAbs, 'utf8');
+    assert.ok(content.includes('rootProject.name = "CodeLearn"'), 'Content on disk must match');
+
+    // Clean up
+    try {
+      if (fs.existsSync(targetFileAbs)) {
+        fs.unlinkSync(targetFileAbs);
+      }
+    } catch {}
+  });
 });

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { OllamaService, ChatMessage } from './ollamaService';
+import { OllamaService, ChatMessage, OllamaTimeoutOptions, ToolChatOptions, ToolChatProgress } from './ollamaService';
 import { AgentToolService, ToolCall, ToolResult } from './agentToolService';
 import { CommandClassifier, CommandTier } from './commandClassifier';
 import { PathSecurity } from './pathSecurity';
@@ -10,6 +10,7 @@ import { WorkspaceDiscoveryService, WorkspaceDiscoveryResult } from './workspace
 import { ExploreBeforeAskGate } from './exploreBeforeAskGate';
 import { ConfigurationService } from './configurationService';
 import { ExtensionLogger } from './extensionLogger';
+import { ConversationContextManager, MultiPhaseSpecResult } from './conversationContextManager';
 import {
   AgentRole,
   IAgentDefinition,
@@ -67,6 +68,8 @@ export interface SwarmOptions {
   availableModels: string[];
   isContinuation?: boolean;
   workspaceRootUri?: vscode.Uri;
+  roleSettings?: Record<string, string>;
+  priorConversation?: ChatMessage[];
 }
 
 export class SwarmOrchestrator {
@@ -79,6 +82,8 @@ export class SwarmOrchestrator {
   availableModels: string[];
   private isContinuation: boolean;
   private workspaceRootUri?: vscode.Uri;
+  private roleSettings?: Record<string, string>;
+  private priorConversation?: ChatMessage[];
   private _savePromise: Promise<void> = Promise.resolve();
 
   // Time-slicing state: track loaded model to unload before loading a new one under 8GB VRAM constraint
@@ -95,6 +100,7 @@ export class SwarmOrchestrator {
   private discoveryResult?: WorkspaceDiscoveryResult;
   private exploreGate?: ExploreBeforeAskGate;
   private textClarificationRetryCount = 0;
+  private codeDumpRetryCount = 0;
 
   constructor(ollamaService: OllamaService, options: SwarmOptions) {
     this.ollamaService = ollamaService;
@@ -106,6 +112,8 @@ export class SwarmOrchestrator {
     this.availableModels = options.availableModels;
     this.isContinuation = options.isContinuation ?? false;
     this.workspaceRootUri = options.workspaceRootUri;
+    this.roleSettings = options.roleSettings;
+    this.priorConversation = options.priorConversation;
   }
 
   public setAutonomousMode(enabled: boolean) {
@@ -221,6 +229,47 @@ export class SwarmOrchestrator {
     await this.saveWhiteboardToDisk();
 
     const config = ConfigurationService.getInstance();
+
+    // 0. Resolve referential follow-ups ("actually implement the changes", "do it")
+    const refRes = ConversationContextManager.resolveReferentialObjective(
+      userGoal,
+      this.priorConversation || []
+    );
+
+    if (refRes.requiresClarification) {
+      callbacks.onStatusUpdate?.('Clarification required: No prior context for referential request.');
+      return refRes.clarificationQuestion || 'What specific changes or files would you like to implement?';
+    }
+
+    let effectiveGoal = refRes.effectiveObjective;
+
+    // Detect Multi-Phase Specification (execute Phase 1 only)
+    let multiPhaseInfo: MultiPhaseSpecResult | undefined;
+    if (config.decomposeMultiPhaseSpecs) {
+      const mp = ConversationContextManager.detectMultiPhaseSpec(effectiveGoal);
+      if (mp.isMultiPhase) {
+        multiPhaseInfo = mp;
+        effectiveGoal = mp.scopedGoal;
+        callbacks.onProgress?.({
+          icon: '📑',
+          message: `Decomposed multi-phase specification: Scoping execution to Phase ${mp.activePhase?.phaseNumber} of ${mp.totalPhases} (${mp.activePhase?.title}).`,
+          agentRole: 'orchestrator',
+          agentName: 'Swarm Orchestrator',
+          agentColor: '#a855f7',
+        });
+      }
+    }
+
+    // Format bounded, delimited prior conversation context
+    const priorContextResult = ConversationContextManager.formatPriorContext(
+      this.priorConversation || [],
+      {
+        maxPriorTurns: config.maxPriorTurns,
+        tokenBudget: config.tokenBudget,
+        enableLlmSummary: config.enableLlmSummary,
+      }
+    );
+
     let discoveryResult: WorkspaceDiscoveryResult | undefined;
     if (config.enableWorkspaceDiscoveryPreStep) {
       callbacks.onStatusUpdate?.('Scanning workspace structure and manifests...');
@@ -245,10 +294,16 @@ export class SwarmOrchestrator {
       hasToolSupport: modelHasTools,
       discoveryResult,
       generationId,
+      hasPriorContext: priorContextResult.hasPriorContext,
+      isReferential: refRes.isReferential,
     });
     this.textClarificationRetryCount = 0;
+    this.codeDumpRetryCount = 0;
 
-    let initialUserContent = `Primary User Objective:\n${userGoal}`;
+    let initialUserContent = `Primary User Objective:\n${effectiveGoal}`;
+    if (priorContextResult.hasPriorContext) {
+      initialUserContent = `${priorContextResult.formattedContext}\n\n${initialUserContent}`;
+    }
     if (discoveryResult) {
       initialUserContent += `\n\n${discoveryResult.rawText}`;
     }
@@ -296,6 +351,37 @@ export class SwarmOrchestrator {
         // Compact Orchestrator context if growing large
         this.compactContext(this.orchestratorHistory);
 
+        const config = ConfigurationService.getInstance();
+        const timeouts: OllamaTimeoutOptions = {
+          headersTimeoutMs: config.headersTimeout,
+          idleStreamTimeoutMs: config.idleStreamTimeout,
+          totalTimeoutMs: config.totalGenerationTimeout,
+          absoluteMaxTimeoutMs: config.absoluteMaxTimeoutMs,
+          keepGoingGracePeriodMs: config.keepGoingGracePeriodMs,
+        };
+        const toolOptions: ToolChatOptions = {
+          stream: config.streamToolCalls,
+          disableThinking: config.disableThinking,
+          enableEmbeddedFallback: config.enableEmbeddedToolCallFallback,
+          allowedToolNames: orchDef.tools.map(t => t.function.name),
+          onProgress: (prog: ToolChatProgress) => {
+            if (prog.phase === 'thinking') {
+              callbacks.onThought?.(prog.partialContent);
+            }
+          },
+          onTotalCeilingWarning: async (info: { elapsedMs: number; tokenCount: number }) => {
+            const minutes = (info.elapsedMs / 60000).toFixed(1);
+            callbacks.onStatusUpdate?.(`Still generating (${minutes} min, ${info.tokenCount} tokens).`);
+            if (callbacks.onAskUser) {
+              const answer = await callbacks.onAskUser(
+                `Generation has run for ${minutes} minutes (${info.tokenCount} tokens). Continue generating? (Keep going / Stop)`
+              );
+              return /stop/i.test(answer) ? 'stop' : 'keep_going';
+            }
+            return 'keep_going';
+          }
+        };
+
         const responseMsg = await this.ollamaService.chatWithTools(
           activeModel,
           this.orchestratorHistory,
@@ -304,7 +390,9 @@ export class SwarmOrchestrator {
           {
             num_ctx: this.numCtx,
             temperature: Math.min(this.temperature, 0.1),
-          }
+          },
+          timeouts,
+          toolOptions
         );
 
         this.orchestratorHistory.push(responseMsg);
@@ -346,29 +434,73 @@ export class SwarmOrchestrator {
 
             // Statement vs Task / Action-or-Evidence Requirement:
             // If the turn ends solely with a clarification request while relevant files exist in the workspace,
-            // retry once with an explicit instruction to inspect first, then surface honestly.
+            // or while prior context/proposal exists, retry once with an explicit instruction to inspect or implement.
             const isClarificationQuestion =
               /\?(\s*)$/.test(rawAnswer) ||
               /(?:please\s+(?:provide|clarify|specify)|which\s+(?:framework|backend|frontend)|what\s+(?:aspects|framework|do you mean))/i.test(rawAnswer);
 
-            if (isClarificationQuestion && this.discoveryResult?.hasRelevantFiles && this.textClarificationRetryCount < 1) {
+            if (
+              isClarificationQuestion &&
+              (this.discoveryResult?.hasRelevantFiles || priorContextResult.hasPriorContext || refRes.isReferential) &&
+              this.textClarificationRetryCount < 1
+            ) {
               this.textClarificationRetryCount++;
-              ExtensionLogger.warn(`[SwarmOrchestrator] Turn ended with ungrounded text clarification question. Forcing inspection retry.`);
+              ExtensionLogger.warn(`[SwarmOrchestrator] Turn ended with ungrounded text clarification question. Forcing inspection/implementation retry.`);
               callbacks.onProgress?.({
                 icon: '🔄',
-                message: 'Clarification requested before workspace inspection. Retrying with directive to explore first...',
+                message: refRes.isReferential
+                  ? 'Clarification requested on referential task. Directing agent to implement referenced files on disk...'
+                  : 'Clarification requested before workspace inspection. Retrying with directive to explore first...',
                 agentRole: 'orchestrator',
                 agentName: orchDef.name,
                 agentColor: orchDef.color,
               });
               this.orchestratorHistory.push({
                 role: 'user',
-                content: `Do not ask clarification questions yet. Inspect the workspace first using list_dir, view_file_range, or search_workspace, and propose next steps based on what you find.`
+                content: refRes.isReferential
+                  ? `Do not ask clarification questions. Implement the referenced files on disk now by delegating to 'coder' with 'create_file'.`
+                  : `Do not ask clarification questions yet. Inspect the workspace first using list_dir, view_file_range, or search_workspace, and propose next steps based on what you find.`
               });
               continue;
             }
 
+            // Code-Dump without File Writes Detection (enforce actual writes for implementation requests)
+            if (config.enforceFileWritesForImplementation && ConversationContextManager.isImplementationRequest(effectiveGoal)) {
+              const currentMods = this.whiteboard.currentTask?.modifiedFiles || this.whiteboard.modifiedFiles || [];
+              const dumpCheck = ConversationContextManager.detectCodeDumpWithoutWrites(rawAnswer, currentMods.length);
+              if (dumpCheck.isCodeDump) {
+                if (this.codeDumpRetryCount < 1) {
+                  this.codeDumpRetryCount++;
+                  ExtensionLogger.warn(`[SwarmOrchestrator] Turn ended with code dump in chat but 0 files written to disk. Forcing coder delegation retry.`);
+                  callbacks.onProgress?.({
+                    icon: '⚠️',
+                    message: 'Code output in chat without workspace file writes. Retrying with directive to write files to disk...',
+                    agentRole: 'orchestrator',
+                    agentName: orchDef.name,
+                    agentColor: orchDef.color,
+                  });
+                  this.orchestratorHistory.push({
+                    role: 'user',
+                    content: `You provided code blocks in chat, but created 0 files on disk. Do NOT output code blocks into chat. You must call 'delegate_task' to assign the 'coder' sub-agent to write or edit these files on disk using 'create_file' or 'str_replace'. Target files: ${dumpCheck.codeBlockFilePaths.join(', ') || 'required project files'}. Delegate to the coder agent now.`
+                  });
+                  continue;
+                } else {
+                  callbacks.onStatusUpdate?.('No files were written. Apply these blocks?');
+                  callbacks.onProgress?.({
+                    icon: '📋',
+                    message: 'No files were written to disk. Review and apply these code blocks directly using the Apply/Create File buttons.',
+                    agentRole: 'orchestrator',
+                    agentName: orchDef.name,
+                    agentColor: orchDef.color,
+                  });
+                }
+              }
+            }
+
             finalAnswer = rawAnswer;
+            if (multiPhaseInfo && multiPhaseInfo.nextPhase) {
+              finalAnswer += `\n\n---\n**Phase ${multiPhaseInfo.activePhase?.phaseNumber} complete.** Would you like to proceed with **Phase ${multiPhaseInfo.nextPhase.phaseNumber}: ${multiPhaseInfo.nextPhase.title}**?`;
+            }
             isTaskFinished = true;
             break;
           }
@@ -422,9 +554,26 @@ export class SwarmOrchestrator {
             this.currentAgentRole = target;
             break; // Execute sub-agent immediately
           } else if (toolName === 'finish_task') {
+            const currentMods = this.whiteboard.currentTask?.modifiedFiles || this.whiteboard.modifiedFiles || [];
+            const summaryText = (args.final_summary || '') + ' ' + (responseMsg.content || '');
+
+            // Task Verification Evidence Requirement: Claimed file creation check
+            if (config.enforceFileWritesForImplementation && ConversationContextManager.isImplementationRequest(effectiveGoal)) {
+              const claimedPaths = ConversationContextManager.extractReferencedFilePaths(summaryText);
+              if (currentMods.length === 0 && claimedPaths.length > 0 && turns < this.maxTurns - 2) {
+                this.orchestratorHistory.push({
+                  role: 'tool',
+                  name: 'finish_task',
+                  content: `Rejected finish_task: You claimed completion for files (${claimedPaths.join(
+                    ', '
+                  )}), but 0 files were written to disk by tools. You must delegate to 'coder' to write these files using 'create_file' before finishing.`
+                });
+                continue;
+              }
+            }
+
             // Task Verification Evidence Requirement:
             // If code was modified during this session, verify that tester reviewed diagnostics or build
-            const currentMods = this.whiteboard.currentTask?.modifiedFiles || this.whiteboard.modifiedFiles || [];
             if (currentMods.length > 0) {
               const currentHistory = this.whiteboard.currentTask?.delegationHistory || this.whiteboard.delegationHistory || [];
               const hasTesterVerification = currentHistory.some(
@@ -444,6 +593,9 @@ export class SwarmOrchestrator {
             }
 
             finalAnswer = args.final_summary || responseMsg.content || 'Swarm task completed.';
+            if (multiPhaseInfo && multiPhaseInfo.nextPhase) {
+              finalAnswer += `\n\n---\n**Phase ${multiPhaseInfo.activePhase?.phaseNumber} complete.** Would you like to proceed with **Phase ${multiPhaseInfo.nextPhase.phaseNumber}: ${multiPhaseInfo.nextPhase.title}**?`;
+            }
             isTaskFinished = true;
             if (this.whiteboard.currentTask) {
               this.whiteboard.currentTask.completed = true;
@@ -625,6 +777,37 @@ export class SwarmOrchestrator {
       if (signal?.aborted) throw new Error('Sub-agent execution aborted.');
       subIterations++;
 
+      const config = ConfigurationService.getInstance();
+      const timeouts: OllamaTimeoutOptions = {
+        headersTimeoutMs: config.headersTimeout,
+        idleStreamTimeoutMs: config.idleStreamTimeout,
+        totalTimeoutMs: config.totalGenerationTimeout,
+        absoluteMaxTimeoutMs: config.absoluteMaxTimeoutMs,
+        keepGoingGracePeriodMs: config.keepGoingGracePeriodMs,
+      };
+      const toolOptions: ToolChatOptions = {
+        stream: config.streamToolCalls,
+        disableThinking: config.disableThinking,
+        enableEmbeddedFallback: config.enableEmbeddedToolCallFallback,
+        allowedToolNames: subDef.tools.map(t => t.function.name),
+        onProgress: (prog: ToolChatProgress) => {
+          if (prog.phase === 'thinking') {
+            callbacks.onThought?.(`[${subDef.name} Thought]\n${prog.partialContent}`);
+          }
+        },
+        onTotalCeilingWarning: async (info: { elapsedMs: number; tokenCount: number }) => {
+          const minutes = (info.elapsedMs / 60000).toFixed(1);
+          callbacks.onStatusUpdate?.(`${subDef.name} still generating (${minutes} min, ${info.tokenCount} tokens).`);
+          if (callbacks.onAskUser) {
+            const answer = await callbacks.onAskUser(
+              `${subDef.name} has run for ${minutes} minutes (${info.tokenCount} tokens). Continue generating? (Keep going / Stop)`
+            );
+            return /stop/i.test(answer) ? 'stop' : 'keep_going';
+          }
+          return 'keep_going';
+        }
+      };
+
       const subResponse = await this.ollamaService.chatWithTools(
         modelName,
         subHistory,
@@ -633,7 +816,9 @@ export class SwarmOrchestrator {
         {
           num_ctx: this.numCtx,
           temperature: Math.min(this.temperature, 0.1),
-        }
+        },
+        timeouts,
+        toolOptions
       );
 
       subHistory.push(subResponse);
@@ -758,27 +943,53 @@ export class SwarmOrchestrator {
 
   /**
    * VRAM-Aware Model Time-Slicing:
-   * When switching between models (e.g. DeepSeek-R1 <-> Qwen 2.5 Coder) under an 8GB VRAM limit,
+   * When switching between models under an 8GB VRAM limit,
    * unloads the currently active model via keep_alive: 0 before loading the next one.
+   * Logs model dispatch source and time-slicing swap duration.
    */
   private async timeSliceModel(role: AgentRole, callbacks: AgentCallbacks): Promise<string> {
-    const targetModel = this.ollamaService.resolveModelForRole(role, this.userModel, this.availableModels);
+    const resolution = this.ollamaService.resolveModelForRole(
+      role,
+      this.userModel,
+      this.availableModels,
+      {
+        roleSettings: this.roleSettings,
+        prompt: this.whiteboard?.userObjective
+      }
+    );
+    const targetModel = resolution.model;
 
     if (this.currentlyLoadedModel && this.currentlyLoadedModel !== targetModel) {
       const prevModel = this.currentlyLoadedModel;
+      const swapStart = Date.now();
+      ExtensionLogger.info(
+        `[VRAM Time-Slice] Swapping residency from ${prevModel} to ${targetModel} for role "${role}" (Source: ${resolution.source})...`
+      );
       callbacks.onProgress?.({
         icon: '🔄',
-        message: `VRAM Time-Slice: Unloading ${prevModel} to load ${targetModel} for ${role}...`,
+        message: `VRAM Time-Slice: Swapping from ${prevModel} to ${targetModel} for ${role}...`,
         agentRole: role,
         agentName: getAgentDefinition(role).name,
         agentColor: getAgentDefinition(role).color
       });
 
       await this.ollamaService.unloadModel(prevModel);
+      const swapDuration = Date.now() - swapStart;
+      ExtensionLogger.info(
+        `[VRAM Time-Slice] Unloaded ${prevModel} in ${swapDuration}ms. Next request will cold-load ${targetModel}.`
+      );
       this.currentlyLoadedModel = targetModel;
     } else if (!this.currentlyLoadedModel) {
       this.currentlyLoadedModel = targetModel;
     }
+
+    callbacks.onProgress?.({
+      icon: '🤖',
+      message: `Active Model [${role}]: ${targetModel} (${resolution.source})`,
+      agentRole: role,
+      agentName: getAgentDefinition(role).name,
+      agentColor: getAgentDefinition(role).color
+    });
 
     return targetModel;
   }

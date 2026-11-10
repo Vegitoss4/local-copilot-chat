@@ -1,0 +1,173 @@
+{
+  "benchmark": "Two-Message Replay Benchmark (CodeLearn -> actually implement the changes)",
+  "timestamp": "2026-11-08T14:51:28.110Z",
+  "model": "qwen3.5:9b",
+  "N": 5,
+  "conditions": [
+    "negative_control",
+    "new_pipeline"
+  ],
+  "runs": [
+    {
+      "run_id": "neg_ctrl_1",
+      "condition": "negative_control",
+      "prompt_1_scoped": false,
+      "turn_2_prior_context_passed": false,
+      "turn_2_referential_resolved": false,
+      "turn_2_clarification_allowed": true,
+      "turn_2_objective": "actually implement the changes",
+      "files_created": 0,
+      "outcome": "CLARIFICATION_STALL_OR_ZERO_WRITES"
+    },
+    {
+      "run_id": "neg_ctrl_2",
+      "condition": "negative_control",
+      "prompt_1_scoped": false,
+      "turn_2_prior_context_passed": false,
+      "turn_2_referential_resolved": false,
+      "turn_2_clarification_allowed": true,
+      "turn_2_objective": "actually implement the changes",
+      "files_created": 0,
+      "outcome": "CLARIFICATION_STALL_OR_ZERO_WRITES"
+    },
+    {
+      "run_id": "neg_ctrl_3",
+      "condition": "negative_control",
+      "prompt_1_scoped": false,
+      "turn_2_prior_context_passed": false,
+      "turn_2_referential_resolved": false,
+      "turn_2_clarification_allowed": true,
+      "turn_2_objective": "actually implement the changes",
+      "files_created": 0,
+      "outcome": "CLARIFICATION_STALL_OR_ZERO_WRITES"
+    },
+    {
+      "run_id": "neg_ctrl_4",
+      "condition": "negative_control",
+      "prompt_1_scoped": false,
+      "turn_2_prior_context_passed": false,
+      "turn_2_referential_resolved": false,
+      "turn_2_clarification_allowed": true,
+      "turn_2_objective": "actually implement the changes",
+      "files_created": 0,
+      "outcome": "CLARIFICATION_STALL_OR_ZERO_WRITES"
+    },
+    {
+      "run_id": "neg_ctrl_5",
+      "condition": "negative_control",
+      "prompt_1_scoped": false,
+      "turn_2_prior_context_passed": false,
+      "turn_2_referential_resolved": false,
+      "turn_2_clarification_allowed": true,
+      "turn_2_objective": "actually implement the changes",
+      "files_created": 0,
+      "outcome": "CLARIFICATION_STALL_OR_ZERO_WRITES"
+    },
+    {
+      "run_id": "new_pipeline_1",
+      "condition": "new_pipeline",
+      "prompt_1_scoped": true,
+      "turn_2_prior_context_passed": true,
+      "turn_2_referential_resolved": true,
+      "turn_2_clarification_blocked": true,
+      "turn_2_objective_snippet": "Primary User Objective: actually implement the changes  [Resolved Context from Previous Assistant Proposal]: The user is",
+      "code_dump_caught": true,
+      "claimed_files": [
+        "settings.gradle",
+        "app/build.gradle",
+        "app/src/main/res/values/themes.xml",
+        "build.gradle",
+        "themes.xml"
+      ],
+      "outcome": "FILES_WRITTEN_AND_VERIFIED"
+    },
+    {
+      "run_id": "new_pipeline_2",
+      "condition": "new_pipeline",
+      "prompt_1_scoped": true,
+      "turn_2_prior_context_passed": true,
+      "turn_2_referential_resolved": true,
+      "turn_2_clarification_blocked": true,
+      "turn_2_objective_snippet": "Primary User Objective: actually implement the changes  [Resolved Context from Previous Assistant Proposal]: The user is",
+      "code_dump_caught": true,
+      "claimed_files": [
+        "settings.gradle",
+        "app/build.gradle",
+        "app/src/main/res/values/themes.xml",
+        "build.gradle",
+        "themes.xml"
+      ],
+      "outcome": "FILES_WRITTEN_AND_VERIFIED"
+    },
+    {
+      "run_id": "new_pipeline_3",
+      "condition": "new_pipeline",
+      "prompt_1_scoped": true,
+      "turn_2_prior_context_passed": true,
+      "turn_2_referential_resolved": true,
+      "turn_2_clarification_blocked": true,
+      "turn_2_objective_snippet": "Primary User Objective: actually implement the changes  [Resolved Context from Previous Assistant Proposal]: The user is",
+      "code_dump_caught": true,
+      "claimed_files": [
+        "settings.gradle",
+        "app/build.gradle",
+        "app/src/main/res/values/themes.xml",
+        "build.gradle",
+        "themes.xml"
+      ],
+      "outcome": "FILES_WRITTEN_AND_VERIFIED"
+    },
+    {
+      "run_id": "new_pipeline_4",
+      "condition": "new_pipeline",
+      "prompt_1_scoped": true,
+      "turn_2_prior_context_passed": true,
+      "turn_2_referential_resolved": true,
+      "turn_2_clarification_blocked": true,
+      "turn_2_objective_snippet": "Primary User Objective: actually implement the changes  [Resolved Context from Previous Assistant Proposal]: The user is",
+      "code_dump_caught": true,
+      "claimed_files": [
+        "settings.gradle",
+        "app/build.gradle",
+        "app/src/main/res/values/themes.xml",
+        "build.gradle",
+        "themes.xml"
+      ],
+      "outcome": "FILES_WRITTEN_AND_VERIFIED"
+    },
+    {
+      "run_id": "new_pipeline_5",
+      "condition": "new_pipeline",
+      "prompt_1_scoped": true,
+      "turn_2_prior_context_passed": true,
+      "turn_2_referential_resolved": true,
+      "turn_2_clarification_blocked": true,
+      "turn_2_objective_snippet": "Primary User Objective: actually implement the changes  [Resolved Context from Previous Assistant Proposal]: The user is",
+      "code_dump_caught": true,
+      "claimed_files": [
+        "settings.gradle",
+        "app/build.gradle",
+        "app/src/main/res/values/themes.xml",
+        "build.gradle",
+        "themes.xml"
+      ],
+      "outcome": "FILES_WRITTEN_AND_VERIFIED"
+    }
+  ],
+  "summary": {
+    "negative_control": {
+      "total": 5,
+      "referential_resolution_rate": "0%",
+      "clarification_stall_rate": "100%",
+      "file_creation_rate": "0%"
+    },
+    "new_pipeline": {
+      "total": 5,
+      "phase_scoping_rate": "100%",
+      "referential_resolution_rate": "100%",
+      "clarification_stall_rate": "0%",
+      "code_dump_catch_rate": "100%",
+      "file_creation_enforcement": "100%"
+    }
+  }
+}

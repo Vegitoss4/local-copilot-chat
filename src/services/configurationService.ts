@@ -25,6 +25,15 @@ export interface ILocalCopilotConfig {
   streamToolCalls: boolean;
   enableEmbeddedToolCallFallback: boolean;
   headersTimeout: number;
+  roleModels: Record<string, string>;
+  disableThinking: boolean;
+  absoluteMaxTimeoutMs: number;
+  keepGoingGracePeriodMs: number;
+  maxPriorTurns: number;
+  tokenBudget: number;
+  enableLlmSummary: boolean;
+  decomposeMultiPhaseSpecs: boolean;
+  enforceFileWritesForImplementation: boolean;
 }
 
 export const CONFIG_DEFAULTS = {
@@ -50,6 +59,15 @@ export const CONFIG_DEFAULTS = {
   enableWorkspaceDiscoveryPreStep: true,
   streamToolCalls: true,
   enableEmbeddedToolCallFallback: false,
+  roleModels: {} as Record<string, string>,
+  disableThinking: false,
+  absoluteMaxTimeoutMs: 900000,
+  keepGoingGracePeriodMs: 30000,
+  maxPriorTurns: 6,
+  tokenBudget: 4000,
+  enableLlmSummary: false,
+  decomposeMultiPhaseSpecs: true,
+  enforceFileWritesForImplementation: true,
 } as const;
 
 export const CONFIG_BOUNDS = {
@@ -63,6 +81,10 @@ export const CONFIG_BOUNDS = {
   idleUnloadTimeout: { min: 30000, max: 600000 },
   minExplorationBeforeAsk: { min: 0, max: 10 },
   maxClarificationQuestionsPerTask: { min: 0, max: 10 },
+  absoluteMaxTimeoutMs: { min: 60000, max: 3600000 },
+  keepGoingGracePeriodMs: { min: 5000, max: 120000 },
+  maxPriorTurns: { min: 0, max: 50 },
+  tokenBudget: { min: 500, max: 32000 },
 } as const;
 
 export class ConfigurationService implements vscode.Disposable {
@@ -324,6 +346,94 @@ export class ConfigurationService implements vscode.Disposable {
     return CONFIG_DEFAULTS.headersTimeout;
   }
 
+  public get roleModels(): Record<string, string> {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('roleModels');
+    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+      const sanitized: Record<string, string> = {};
+      for (const [k, v] of Object.entries(raw)) {
+        if (typeof v === 'string' && v.trim()) {
+          sanitized[k.toLowerCase()] = v.trim();
+        }
+      }
+      return sanitized;
+    }
+    return {};
+  }
+
+  public getRoleModel(role: string): string | undefined {
+    if (!role) return undefined;
+    const models = this.roleModels;
+    return models[role.toLowerCase()];
+  }
+
+  public get disableThinking(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('agent.disableThinking');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.disableThinking;
+  }
+
+  public get absoluteMaxTimeoutMs(): number {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('timeouts.absoluteMaxTimeoutMs');
+    if (typeof raw === 'number' && !isNaN(raw) && isFinite(raw)) {
+      const intVal = Math.floor(raw);
+      return Math.max(CONFIG_BOUNDS.absoluteMaxTimeoutMs.min, Math.min(CONFIG_BOUNDS.absoluteMaxTimeoutMs.max, intVal));
+    }
+    return CONFIG_DEFAULTS.absoluteMaxTimeoutMs;
+  }
+
+  public get keepGoingGracePeriodMs(): number {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('timeouts.keepGoingGracePeriodMs');
+    if (typeof raw === 'number' && !isNaN(raw) && isFinite(raw)) {
+      const intVal = Math.floor(raw);
+      return Math.max(CONFIG_BOUNDS.keepGoingGracePeriodMs.min, Math.min(CONFIG_BOUNDS.keepGoingGracePeriodMs.max, intVal));
+    }
+    return CONFIG_DEFAULTS.keepGoingGracePeriodMs;
+  }
+
+  public get maxPriorTurns(): number {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('context.maxPriorTurns');
+    if (typeof raw === 'number' && !isNaN(raw) && isFinite(raw)) {
+      const intVal = Math.floor(raw);
+      return Math.max(CONFIG_BOUNDS.maxPriorTurns.min, Math.min(CONFIG_BOUNDS.maxPriorTurns.max, intVal));
+    }
+    return CONFIG_DEFAULTS.maxPriorTurns;
+  }
+
+  public get tokenBudget(): number {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('context.tokenBudget');
+    if (typeof raw === 'number' && !isNaN(raw) && isFinite(raw)) {
+      const intVal = Math.floor(raw);
+      return Math.max(CONFIG_BOUNDS.tokenBudget.min, Math.min(CONFIG_BOUNDS.tokenBudget.max, intVal));
+    }
+    return CONFIG_DEFAULTS.tokenBudget;
+  }
+
+  public get enableLlmSummary(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('context.enableLlmSummary');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.enableLlmSummary;
+  }
+
+  public get decomposeMultiPhaseSpecs(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('agent.decomposeMultiPhaseSpecs');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.decomposeMultiPhaseSpecs;
+  }
+
+  public get enforceFileWritesForImplementation(): boolean {
+    const raw = vscode.workspace.getConfiguration('localCopilot').get<any>('agent.enforceFileWritesForImplementation');
+    if (typeof raw === 'boolean') {
+      return raw;
+    }
+    return CONFIG_DEFAULTS.enforceFileWritesForImplementation;
+  }
+
   public getConfig(): ILocalCopilotConfig {
     return {
       ollamaEndpoint: this.ollamaEndpoint,
@@ -348,6 +458,15 @@ export class ConfigurationService implements vscode.Disposable {
       streamToolCalls: this.streamToolCalls,
       enableEmbeddedToolCallFallback: this.enableEmbeddedToolCallFallback,
       headersTimeout: this.headersTimeout,
+      roleModels: this.roleModels,
+      disableThinking: this.disableThinking,
+      absoluteMaxTimeoutMs: this.absoluteMaxTimeoutMs,
+      keepGoingGracePeriodMs: this.keepGoingGracePeriodMs,
+      maxPriorTurns: this.maxPriorTurns,
+      tokenBudget: this.tokenBudget,
+      enableLlmSummary: this.enableLlmSummary,
+      decomposeMultiPhaseSpecs: this.decomposeMultiPhaseSpecs,
+      enforceFileWritesForImplementation: this.enforceFileWritesForImplementation,
     };
   }
 

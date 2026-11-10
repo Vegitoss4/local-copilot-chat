@@ -30,6 +30,8 @@
 23. **Security Hardening (Phase 1)**: Filesystem boundary resolution (`resolveSecurePath`), Windows NTFS directory junction and symlink containment, 4-tier command classification (`CommandClassifier`), host executable resolution (`ExecutableResolver`), Git execution isolation (`GitExecutionIsolator`), strict Webview Content Security Policy, and message schema validation (`MessageValidator`).
 24. **Evidence Verification Gate & Loop Breaker (Phase 3)**: Orchestrator rejects premature `finish_task` calls if files were modified until the `tester` sub-agent reviews diagnostics and confirms workspace stability. Consecutive identical sub-agent tool call loops are automatically terminated.
 25. **Persistent Conversation History (Phase 5)**: User and agent conversation turns are automatically saved to `.vscode/local-copilot/chat_history.json` and rehydrated upon extension startup.
+26. **Conversation Context Manager & Referential Objective Resolution (`conversationContextManager.ts`)**: Token-budgeted prior conversation context window (last N turns verbatim + deterministic older turn summary), trust partitioning (user turns trusted, tool output tagged untrusted), and automatic resolution of referential follow-ups ("actually implement the changes") against previous assistant proposals.
+27. **Code-Dump Enforcement & Multi-Phase Decomposition**: Prevents premature completion when an assistant outputs code blocks into chat with 0 disk writes on implementation requests; automatically decomposes multi-phase specs into isolated sequential single-phase executions.
 
 ---
 
@@ -418,7 +420,15 @@ Phase 7 transformed all Phase 5.5 and Phase 6 autonomous capabilities into unifi
    - Non-generative embedding-only models (`capabilities: ['embedding']` without `'completion'`) are strictly excluded from chat and agent candidate pools.
    - In Agent mode, candidates failing behavioral probe are never auto-selected. Pinned models are preserved when no ranking data differentiates candidates.
 
-10. **Real Extension Host Integration (`test/integration/suite/smokeRealHost.test.ts`)**:
+10. **Model Dispatch Invariant & Role Overrides (`src/services/ollamaService.ts`)**:
+    - **Zero Model Overrides When Pinned**: When a user selects a specific model (e.g. `qwen3.5:9b`), that model is guaranteed to run across all roles (`orchestrator`, `planner`, `coder`, `tester`, `reviewer`). Zero hardcoded regexes remain in dispatch logic.
+    - **Explicit Role Overrides**: Setting `localCopilot.roleModels` allows explicit per-role assignments (e.g. `{"coder": "qwen2.5-coder:7b"}`).
+    - **Single-Model Residency Tracking**: Swapping between models under 8GB VRAM limits tracks unload duration and cold-load overhead in the Output Channel.
+    - **Total Ceiling Check-in**: Expiry of `totalGenerationTimeout` during active streaming invokes user check-in ("Still generating (X min, N tokens). Keep going / Stop") before aborting.
+    - **Thinking Suppression**: `localCopilot.agent.disableThinking` sends `think: false` to Ollama `/api/chat` for models supporting thinking bypass.
+    - **CPU Offload Detection**: Warns in UI when `/api/ps` reports `size_vram < size`.
+
+11. **Real Extension Host Integration (`test/integration/suite/smokeRealHost.test.ts`)**:
    - Executes inside real VS Code Electron environment via `@vscode/test-electron`.
    - Verifies real `openTextDocument`, `applyEdit`, `save()`, UTF-8 BOM, and CRLF line ending preservation on disk.
    - Proves modal warning cancellation preserves disk files without modification.
@@ -435,7 +445,7 @@ Phase 7 transformed all Phase 5.5 and Phase 6 autonomous capabilities into unifi
 
 ## 10. Verification & Test Metrics
 
-- **Total Unit Tests**: **559 passing** across 56 test suites (0 failures, 0 pending)
+- **Total Unit Tests**: **582 passing** across 60 test suites (0 failures, 0 pending)
 - **Real Integration Tier**: **34 passing** across 9 test suites
 - **Real Extension Host Tier**: **6 passing** in real VS Code Electron extension host (`@vscode/test-electron`)
 - **Compilation**: `tsc -p ./` (0 errors), `tsc -p ./tsconfig.test.json` (0 errors)

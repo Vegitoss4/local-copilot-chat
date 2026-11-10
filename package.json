@@ -2,7 +2,7 @@
   "name": "local-copilot-chat",
   "displayName": "Local Copilot Chat",
   "description": "Copilot Chat with seamless switching between local AI models like Qwen and DeepSeek",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "local-developer",
   "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {
@@ -203,6 +203,59 @@
           "minimum": 1000,
           "maximum": 300000,
           "description": "Timeout in milliseconds for receiving HTTP response headers / first byte from Ollama"
+        },
+        "localCopilot.roleModels": {
+          "type": "object",
+          "default": {},
+          "description": "Explicit per-role model overrides (e.g. {\"coder\": \"qwen2.5-coder:7b\", \"planner\": \"deepseek-r1:8b\"}). When not set for a role, the user's pinned model is used across all roles."
+        },
+        "localCopilot.agent.disableThinking": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disable the model thinking phase (<think>) during agent turns if supported by Ollama via think: false."
+        },
+        "localCopilot.timeouts.absoluteMaxTimeoutMs": {
+          "type": "integer",
+          "default": 900000,
+          "minimum": 60000,
+          "maximum": 3600000,
+          "description": "Absolute ceiling in milliseconds for generation, after which requests abort regardless of extensions."
+        },
+        "localCopilot.timeouts.keepGoingGracePeriodMs": {
+          "type": "integer",
+          "default": 30000,
+          "minimum": 5000,
+          "maximum": 120000,
+          "description": "Grace period in milliseconds to wait for user 'Keep going' confirmation before aborting when total ceiling is reached."
+        },
+        "localCopilot.context.maxPriorTurns": {
+          "type": "integer",
+          "default": 6,
+          "minimum": 0,
+          "maximum": 50,
+          "description": "Number of prior conversation turns to supply verbatim to the agent orchestrator."
+        },
+        "localCopilot.context.tokenBudget": {
+          "type": "integer",
+          "default": 4000,
+          "minimum": 500,
+          "maximum": 32000,
+          "description": "Character budget for prior conversation context supplied to the agent orchestrator."
+        },
+        "localCopilot.context.enableLlmSummary": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable LLM-based summarization of turns older than maxPriorTurns instead of deterministic summarization."
+        },
+        "localCopilot.agent.decomposeMultiPhaseSpecs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically decompose large multi-phase specifications into isolated sequential tasks, executing and verifying only Phase 1 per turn."
+        },
+        "localCopilot.agent.enforceFileWritesForImplementation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reject code-dump text completions when implementation intent was requested without any corresponding file write tool calls."
         }
       }
     }

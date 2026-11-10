@@ -55,6 +55,15 @@ describe('Deliverable A3: Runtime Configuration Settings Suite', () => {
         streamToolCalls: true,
         enableEmbeddedToolCallFallback: false,
         headersTimeout: 45000,
+        roleModels: {},
+        disableThinking: false,
+        absoluteMaxTimeoutMs: 900000,
+        keepGoingGracePeriodMs: 30000,
+        maxPriorTurns: 6,
+        tokenBudget: 4000,
+        enableLlmSummary: false,
+        decomposeMultiPhaseSpecs: true,
+        enforceFileWritesForImplementation: true,
       });
     });
   });
