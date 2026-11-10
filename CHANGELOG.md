@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] - 2026-11-08
+## [Unreleased] - 2026-11-10
+
+### Changed - Assistant Identity & UI Branding ("Jarvis")
+- Renamed the extension display name, UI titles, command palette labels, Output Channel, Status Bar tooltip/QuickPick, interactive terminal banner, and agent/chat system prompts to **Jarvis** (`package.json`, `extension.ts`, `chatViewProvider.ts`, `statusBarProvider.ts`, `agentRegistry.ts`, `autonomousAgent.ts`, `sessionEngine.ts`, `agentTerminalProvider.ts`). Preserved `localCopilot.*` configuration keys and extension/view IDs for backward compatibility.
 
 ### Fixed & Hardened - Conversation Context, Code-Dump Rejection, Multi-Phase Decomposition & Empty Workspace Gate
 - **Conversation Context Bounding & Trust Partitioning (`conversationContextManager.ts`, `swarmOrchestrator.ts`, `chatViewProvider.ts`, `sessionEngine.ts`)**:

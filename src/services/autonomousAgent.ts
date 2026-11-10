@@ -700,7 +700,7 @@ export class AutonomousAgent {
   }
 
   private buildSystemPrompt(): string {
-    return `You are an elite, autonomous software engineering agent running natively inside Visual Studio Code.
+    return `You are Jarvis, an autonomous software engineering agent running natively inside Visual Studio Code.
 You have direct read, search, surgical modification, question-asking, and command-execution capabilities across the workspace.
 
 ### Core Philosophy & Rules:

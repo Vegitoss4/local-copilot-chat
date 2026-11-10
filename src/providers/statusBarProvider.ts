@@ -99,7 +99,7 @@ export class StatusBarProvider implements vscode.Disposable {
     // Comprehensive accessible tooltip
     const statusText = isGenerating ? 'Generating response...' : 'Idle';
     this._statusBarItem.tooltip = new vscode.MarkdownString(
-      `**Local Copilot Assistant**\n\n` +
+      `**Jarvis Assistant**\n\n` +
       `- **Model**: \`${model}\`\n` +
       `- **Mode**: \`${modeUpper}\`\n` +
       `- **Status**: ${statusText}\n` +
@@ -165,7 +165,7 @@ export class StatusBarProvider implements vscode.Disposable {
       ];
 
       const chosen = await vscode.window.showQuickPick(items, {
-        placeHolder: `Local Copilot (Current: ${this._metrics.mode.toUpperCase()})`
+        placeHolder: `Jarvis (Current: ${this._metrics.mode.toUpperCase()})`
       });
 
       if (!chosen) return;

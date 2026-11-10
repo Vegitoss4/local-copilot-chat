@@ -376,9 +376,13 @@ export class SessionEngine {
           : (config.modelKeepAliveDuration || '5m');
 
         assistantResponse = '';
+        const chatPayload: ChatMessage[] = [
+          { role: 'system', content: 'You are Jarvis, a concise, accurate local AI software engineering assistant running in VS Code.' },
+          ...this._chatHistory
+        ];
         await this._ollamaService.streamChat(
           resolvedModel,
-          this._chatHistory,
+          chatPayload,
           (chunk) => {
             assistantResponse += chunk;
             this._events.onToken?.(chunk);
@@ -413,7 +417,7 @@ export class SessionEngine {
       // =========================================================================
       if (mode === 'plan') {
         const planSystemPrompt =
-          'You are an expert software architect in PLAN MODE. ' +
+          'You are Jarvis, an expert software architect in PLAN MODE. ' +
           'Analyze the user request and project context thoroughly. ' +
           'Produce a comprehensive, step-by-step implementation plan including: ' +
           '1. Architectural strategy and components affected. ' +
@@ -667,7 +671,7 @@ export class SessionEngine {
 
       case '/help': {
         return (
-          '### 🤖 Local Copilot Commands\n\n' +
+          '### 🤖 Jarvis Commands\n\n' +
           '- `/plan <request>`: Switch to read-only plan mode without executing code.\n' +
           '- `/diff`: Show active git diff.\n' +
           '- `/build`: Run project build check.\n' +

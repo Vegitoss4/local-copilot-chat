@@ -1,8 +1,8 @@
-# Local Copilot Chat
+# Jarvis (Local Copilot Chat)
 
-Local Copilot Chat is a privacy-first, local autonomous AI coding assistant extension for Visual Studio Code. Powered entirely by [Ollama](https://ollama.com), it runs completely on your local workstation without sending proprietary source code or credentials to external cloud APIs.
+Jarvis (Local Copilot Chat) is a privacy-first, local autonomous AI coding assistant extension for Visual Studio Code. Powered entirely by [Ollama](https://ollama.com), it runs completely on your local workstation without sending proprietary source code or credentials to external cloud APIs.
 
-Designed and hardened specifically for **8 GB VRAM developer GPUs** (such as NVIDIA RTX 3050/3060/4060 or Apple Silicon unified memory), Local Copilot Chat delivers agentic coding, multi-file refactoring, autonomous debugging, and swarm intelligence with strict resource boundaries.
+Designed and hardened specifically for **8 GB VRAM developer GPUs** (such as NVIDIA RTX 3050/3060/4060 or Apple Silicon unified memory), Jarvis delivers agentic coding, multi-file refactoring, autonomous debugging, and swarm intelligence with strict resource boundaries.
 
 ---
 

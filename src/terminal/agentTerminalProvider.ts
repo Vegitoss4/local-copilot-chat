@@ -79,7 +79,7 @@ export class AgentTerminalProvider implements vscode.Pseudoterminal {
     const model = this._sessionEngine.getModel();
     const mode = this._sessionEngine.getMode();
     this._writeLine(`${ANSI_BOLD}${ANSI_CYAN}====================================================${ANSI_RESET}`);
-    this._writeLine(`${ANSI_BOLD}${ANSI_CYAN}  Local Copilot: Claude Code-Level Agent Terminal   ${ANSI_RESET}`);
+    this._writeLine(`${ANSI_BOLD}${ANSI_CYAN}  Jarvis: Autonomous Agent Terminal               ${ANSI_RESET}`);
     this._writeLine(`${ANSI_DIM}  Model: ${model} | Mode: ${mode.toUpperCase()} | 8 GB Local First${ANSI_RESET}`);
     this._writeLine(`${ANSI_DIM}  Type /help for slash commands, Ctrl+C to cancel turn${ANSI_RESET}`);
     this._writeLine(`${ANSI_BOLD}${ANSI_CYAN}====================================================${ANSI_RESET}\r\n`);

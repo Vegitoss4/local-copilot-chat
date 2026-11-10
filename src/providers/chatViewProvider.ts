@@ -662,9 +662,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    let terminal = vscode.window.terminals.find((t) => t.name === 'Local Copilot');
+    let terminal = vscode.window.terminals.find((t) => t.name === 'Jarvis');
     if (!terminal) {
-      terminal = vscode.window.createTerminal('Local Copilot');
+      terminal = vscode.window.createTerminal('Jarvis');
     }
     terminal.show(true);
     terminal.sendText(trimmed);
@@ -1061,9 +1061,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         assistantResponse = '';
         const waitingTracker = this._startWaitingForOllamaTracker();
         try {
+          const chatPayload: ChatMessage[] = [
+            { role: 'system', content: 'You are Jarvis, a concise, accurate local AI software engineering assistant running in VS Code.' },
+            ...this._chatHistory,
+          ];
           await this._ollamaService.streamChat(
             resolvedModel,
-            this._chatHistory,
+            chatPayload,
             (chunk) => {
               waitingTracker.stop();
               assistantResponse += chunk;
@@ -1288,7 +1292,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} https: data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${cspSource};">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Local Copilot: Chat & Agent Mode</title>
+  <title>Jarvis: Chat & Agent Mode</title>
   <style>
     :root {
       --chat-font: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
@@ -2014,7 +2018,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
 
       <div style="display: flex; align-items: center; gap: 6px;">
-        <span id="buildBadge" class="connection-status-pill" title="Local Copilot Build Version (compiled 2026-11-08)" style="font-size: 10px; opacity: 0.85;">v0.2.0</span>
+        <span id="buildBadge" class="connection-status-pill" title="Jarvis Build Version (compiled 2026-11-10)" style="font-size: 10px; opacity: 0.85;">v0.2.0</span>
         <span id="connectionBadge" class="connection-status-pill connecting" data-action="fetchModels" title="Click to refresh connection">🔄 Connecting...</span>
         <button type="button" id="auto-btn" class="pill-btn active" data-action="toggleAuto">⚡ Auto: ON</button>
         <button type="button" id="reset-btn" class="icon-btn" data-action="fetchModels" title="Refresh Models">🔄</button>
@@ -2043,7 +2047,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="messages-container">
     <div class="empty-state" id="empty-state">
       <div style="font-size: 26px;">🤖</div>
-      <div style="font-weight: 600; font-size: 14px;" id="empty-title">Local Copilot (Chat Mode)</div>
+      <div style="font-weight: 600; font-size: 14px;" id="empty-title">Jarvis (Chat Mode)</div>
       <div style="font-size: 11px; opacity: 0.7;" id="empty-subtitle">Ask questions, explain code, or generate snippets</div>
       <div style="font-size: 11px; line-height: 1.6; margin-top: 6px; text-align: left; background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px;" id="empty-tips">
         <div><b>💬 Chat Mode</b>: Conversational assistance, refactoring &amp; explanations</div>
@@ -2164,7 +2168,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       const eTitle = document.getElementById('empty-title');
       if (eTitle) {
-        eTitle.innerText = isAgent ? 'Local Copilot (Agent Mode)' : 'Local Copilot (Chat Mode)';
+        eTitle.innerText = isAgent ? 'Jarvis (Agent Mode)' : 'Jarvis (Chat Mode)';
       }
       const eSubtitle = document.getElementById('empty-subtitle');
       if (eSubtitle) {
@@ -2866,7 +2870,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const msgDiv = document.createElement('div');
       msgDiv.className = 'message assistant';
       const mSel = document.getElementById('modelSelect');
-      const selectedModel = modelName || (mSel ? mSel.value : 'Local Copilot');
+      const selectedModel = modelName || (mSel ? mSel.value : 'Jarvis');
       const badge = mode === 'agent' ? ' (⚡ Agent Mode)' : ' (💬 Chat Mode)';
 
       let accordionHtml = '';
@@ -2883,7 +2887,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         '</details>';
       }
 
-      msgDiv.innerHTML = '<div class="message-header"><span>' + escapeHtml(selectedModel) + badge + '</span></div>' +
+      const displaySender = selectedModel === 'Jarvis' ? 'Jarvis' : 'Jarvis · ' + escapeHtml(selectedModel);
+      msgDiv.innerHTML = '<div class="message-header"><span>' + displaySender + badge + '</span></div>' +
         accordionHtml +
         '<details class="think-box" style="display:none;"><summary>💭 Thought process</summary><div class="think-content"></div></details>' +
         '<div class="agent-ask-container"></div>' +

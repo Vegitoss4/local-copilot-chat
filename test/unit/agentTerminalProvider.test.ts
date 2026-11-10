@@ -48,7 +48,7 @@ describe('Deliverable 11.1: Interactive Agent Pseudoterminal Suite', () => {
       terminalProvider.open(undefined);
       const output = writtenData.join('');
 
-      assert.ok(output.includes('Local Copilot: Claude Code-Level Agent Terminal'));
+      assert.ok(output.includes('Jarvis: Autonomous Agent Terminal'));
       assert.ok(output.includes('qwen2.5-coder:7b'));
       assert.ok(output.includes('[chat]>'));
     });

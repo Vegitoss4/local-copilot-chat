@@ -1,7 +1,7 @@
 {
   "name": "local-copilot-chat",
-  "displayName": "Local Copilot Chat",
-  "description": "Copilot Chat with seamless switching between local AI models like Qwen and DeepSeek",
+  "displayName": "Jarvis",
+  "description": "Jarvis — Local AI Copilot Chat with seamless switching between local models via Ollama",
   "version": "0.2.0",
   "publisher": "local-developer",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -21,7 +21,7 @@
       "activitybar": [
         {
           "id": "local-copilot-sidebar",
-          "title": "Local Copilot",
+          "title": "Jarvis",
           "icon": "$(hubot)"
         }
       ]
@@ -31,22 +31,22 @@
         {
           "type": "webview",
           "id": "localCopilotChat.chatView",
-          "name": "Local Copilot Chat"
+          "name": "Jarvis"
         }
       ]
     },
     "commands": [
       {
         "command": "localCopilotChat.focus",
-        "title": "Local Copilot: Open Chat"
+        "title": "Jarvis: Open Chat"
       },
       {
         "command": "localCopilotChat.explainCode",
-        "title": "Local Copilot: Explain Selected Code"
+        "title": "Jarvis: Explain Selected Code"
       },
       {
         "command": "localCopilotChat.refactorCode",
-        "title": "Local Copilot: Refactor Selected Code"
+        "title": "Jarvis: Refactor Selected Code"
       }
     ],
     "menus": {
@@ -64,7 +64,7 @@
       ]
     },
     "configuration": {
-      "title": "Local Copilot Chat",
+      "title": "Jarvis",
       "properties": {
         "localCopilot.ollamaEndpoint": {
           "type": "string",

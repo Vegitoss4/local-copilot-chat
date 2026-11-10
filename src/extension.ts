@@ -7,10 +7,10 @@ import { CodeGenerationEngine } from './services/codeGenerationEngine';
 import { ModelLifecycleManager } from './services/modelLifecycleManager';
 
 export function activate(context: vscode.ExtensionContext) {
-  const outputChannel = vscode.window.createOutputChannel('Local Copilot');
+  const outputChannel = vscode.window.createOutputChannel('Jarvis');
   context.subscriptions.push(outputChannel);
   outputChannel.show(true);
-  outputChannel.appendLine('[Extension] Local Copilot Chat activating build v0.2.0 (compiled 2026-11-08)...');
+  outputChannel.appendLine('[Extension] Jarvis activating build v0.2.0 (compiled 2026-11-10)...');
 
   const configService = ConfigurationService.getInstance();
   context.subscriptions.push(configService);

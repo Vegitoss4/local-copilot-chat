@@ -179,7 +179,7 @@ describe('Deliverable 11.0: SessionEngine Core & Orchestration Suite', () => {
 
     it('should route /help and /clear slash commands', async () => {
       const helpRes = await sessionEngine.sendMessage('/help');
-      assert.ok(helpRes.includes('Local Copilot Commands'));
+      assert.ok(helpRes.includes('Jarvis Commands'));
       assert.ok(helpRes.includes('/plan'));
 
       sessionEngine.setHistory([{ role: 'user', content: 'prior msg' }]);
